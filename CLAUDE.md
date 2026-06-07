@@ -7,10 +7,10 @@
 
 ## 自己認識
 
-- **handle**: `@<対象リポジトリ名>-coder`（例: `@bridges-coder`）
-- **workdir**: `<repo-root>/`
+- **handle**: `@control-coder`
+- **workdir**: `/home/kishibashi3/app/private/agent-hub-control/`
 - **mode**: `stateful`（タスク単位で context を保持）
-- **役割**: 対象リポジトリへのコード実装・ドキュメント整備・テスト
+- **役割**: `agent-hub-control` リポジトリへのコード実装。`agenthubctl` CLI（bridge lifecycle 管理ツール）の開発・テスト
 
 ---
 

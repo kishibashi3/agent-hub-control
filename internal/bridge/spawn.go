@@ -1,0 +1,200 @@
+// spawn.go — bridge spawn command
+package bridge
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"github.com/kishibashi3/agent-hub-control/internal/state"
+	"github.com/spf13/cobra"
+)
+
+const (
+	defaultSpawnTimeoutS = 30
+	readyPattern         = "registered and listening"
+)
+
+func NewSpawnCmd() *cobra.Command {
+	var (
+		workdir string
+		tenant  string
+		timeout int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "spawn --user <handle> --workdir <path>",
+		Short: "Spawn a bridge-claude2 worker",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			user, _ := cmd.Flags().GetString("user")
+			if user == "" {
+				return fmt.Errorf("--user is required")
+			}
+			return runSpawn(user, workdir, tenant, timeout)
+		},
+	}
+
+	cmd.Flags().StringP("user", "u", "", "agent-hub handle (without @) [required]")
+	cmd.Flags().StringVarP(&workdir, "workdir", "w", "", "peer workdir with CLAUDE.md (default: cwd)")
+	cmd.Flags().StringVar(&tenant, "tenant", "", "tenant ID (overrides AGENT_HUB_TENANT env)")
+	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal")
+
+	return cmd
+}
+
+func runSpawn(user, workdir, tenantFlag string, timeoutS int) error {
+	binary, err := resolveBinary()
+	if err != nil {
+		return err
+	}
+
+	wd := workdir
+	if wd == "" {
+		wd, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getwd: %w", err)
+		}
+	}
+	wd, err = filepath.Abs(wd)
+	if err != nil {
+		return fmt.Errorf("abs workdir: %w", err)
+	}
+	if _, err := os.Stat(wd); err != nil {
+		return fmt.Errorf("workdir %q: %w", wd, err)
+	}
+
+	tenant := tenantFlag
+	if tenant == "" {
+		tenant = os.Getenv("AGENT_HUB_TENANT")
+	}
+
+	logPath := fmt.Sprintf("/tmp/bridge-%s.log", user)
+
+	// 既存プロセスチェック
+	st, err := state.Load()
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	if entry := st.Get(user); entry != nil && entry.IsRunning() {
+		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", user, entry.PID, user)
+	}
+
+	// ログファイルをクリア
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return fmt.Errorf("create log file: %w", err)
+	}
+	logFile.Close()
+
+	// bridge 起動
+	args := []string{"--user", user, "--workdir", wd}
+	if tenant != "" {
+		args = append(args, "--tenant", tenant)
+	}
+
+	proc := exec.Command(binary, args...)
+	logOut, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open log file: %w", err)
+	}
+	defer logOut.Close()
+
+	proc.Stdout = logOut
+	proc.Stderr = logOut
+
+	// プロセスグループから切り離す (nohup 相当)
+	setSysProcAttr(proc)
+
+	fmt.Fprintf(os.Stderr, "starting @%s (workdir=%s, log=%s)\n", user, wd, logPath)
+
+	if err := proc.Start(); err != nil {
+		return fmt.Errorf("start bridge: %w", err)
+	}
+
+	pid := proc.Process.Pid
+
+	// ready シグナル待機
+	deadline := time.Now().Add(time.Duration(timeoutS) * time.Second)
+	ready := false
+
+	for time.Now().Before(deadline) {
+		if found, err := grepLog(logPath, readyPattern); err == nil && found {
+			ready = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if !ready {
+		// タイムアウト時もプロセスを残し、PID を保存しておく
+		fmt.Fprintf(os.Stderr, "warning: timeout waiting for %q (pid=%d). Check log: %s\n", readyPattern, pid, logPath)
+	} else {
+		fmt.Printf("ok pid=%d\n", pid)
+	}
+
+	// 状態を保存
+	st.Set(user, pid, wd, tenant, logPath)
+	if err := st.Save(); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	return nil
+}
+
+// resolveBinary は bridge-claude2 バイナリのパスを解決する。
+// 優先順位: AGENT_HUB_BRIDGE_CLAUDE2_BIN env > PATH の bridge-claude2
+func resolveBinary() (string, error) {
+	if binEnv := os.Getenv("AGENT_HUB_BRIDGE_CLAUDE2_BIN"); binEnv != "" {
+		if _, err := os.Stat(binEnv); err != nil {
+			return "", fmt.Errorf("AGENT_HUB_BRIDGE_CLAUDE2_BIN=%q not found: %w", binEnv, err)
+		}
+		return binEnv, nil
+	}
+
+	path, err := exec.LookPath("bridge-claude2")
+	if err != nil {
+		return "", fmt.Errorf("bridge-claude2 not found in PATH. Set AGENT_HUB_BRIDGE_CLAUDE2_BIN or add bridge-claude2 to PATH")
+	}
+	return path, nil
+}
+
+// grepLog はログファイルに pattern が含まれているかチェックする。
+func grepLog(logPath, pattern string) (bool, error) {
+	f, err := os.Open(logPath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if containsString(scanner.Text(), pattern) {
+			return true, nil
+		}
+	}
+	return false, scanner.Err()
+}
+
+func containsString(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || func() bool {
+		for i := 0; i <= len(s)-len(sub); i++ {
+			if s[i:i+len(sub)] == sub {
+				return true
+			}
+		}
+		return false
+	}())
+}
+
+// pidString は int を文字列に変換するユーティリティ。
+func pidString(pid int) string {
+	return strconv.Itoa(pid)
+}
+
+// suppress unused warning
+var _ = pidString
