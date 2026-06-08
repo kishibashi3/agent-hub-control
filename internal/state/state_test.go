@@ -29,7 +29,7 @@ func TestLoadLockedConcurrent(t *testing.T) {
 				errs[i] = fmt.Errorf("LoadLocked: %w", err)
 				return
 			}
-			st.Set(handle, 1000+i, "/workdir", "tenant", "/tmp/log")
+			st.Set(handle, 1000+i, "bridge-claude2", "/workdir", "tenant", "/tmp/log")
 			if err := st.Save(); err != nil {
 				unlock()
 				errs[i] = fmt.Errorf("Save: %w", err)

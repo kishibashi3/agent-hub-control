@@ -53,12 +53,13 @@ func LoadLocked() (*State, func(), error) {
 
 // Entry は 1 つの bridge プロセスの状態を表す。
 type Entry struct {
-	Handle    string `json:"handle"`
-	PID       int    `json:"pid"`
-	Workdir   string `json:"workdir"`
-	Tenant    string `json:"tenant,omitempty"`
-	LogPath   string `json:"log_path"`
-	StartedAt string `json:"started_at"`
+	Handle     string `json:"handle"`
+	PID        int    `json:"pid"`
+	BridgeType string `json:"bridge_type,omitempty"`
+	Workdir    string `json:"workdir"`
+	Tenant     string `json:"tenant,omitempty"`
+	LogPath    string `json:"log_path"`
+	StartedAt  string `json:"started_at"`
 }
 
 // IsRunning はプロセスが実行中かどうかを返す。
@@ -140,14 +141,15 @@ func (s *State) Save() error {
 }
 
 // Set は handle のエントリを追加/更新する。
-func (s *State) Set(handle string, pid int, workdir, tenant, logPath string) {
+func (s *State) Set(handle string, pid int, bridgeType, workdir, tenant, logPath string) {
 	s.Bridges[handle] = &Entry{
-		Handle:    handle,
-		PID:       pid,
-		Workdir:   workdir,
-		Tenant:    tenant,
-		LogPath:   logPath,
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Handle:     handle,
+		PID:        pid,
+		BridgeType: bridgeType,
+		Workdir:    workdir,
+		Tenant:     tenant,
+		LogPath:    logPath,
+		StartedAt:  time.Now().UTC().Format(time.RFC3339),
 	}
 }
 

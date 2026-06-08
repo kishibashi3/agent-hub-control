@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	agenthubctl bridge spawn --user <handle> --workdir <path>
+//	agenthubctl bridge spawn --user <handle> --workdir <path> [--type <bridge-type>]
 //	agenthubctl bridge stop <handle>
 //	agenthubctl bridge list
 //	agenthubctl bridge status <handle>
@@ -18,6 +18,7 @@
 //	GITHUB_PAT                      required  GitHub Personal Access Token
 //	AGENT_HUB_USER                  optional  handle override (pat モード) / handle (trust モード)
 //	AGENT_HUB_BRIDGE_CLAUDE2_BIN    optional  bridge-claude2 バイナリパス
+//	AGENT_HUB_{TYPE}_BIN            optional  任意 bridge type のバイナリパス (例: AGENT_HUB_BRIDGE_CODEX2_BIN)
 package main
 
 import (

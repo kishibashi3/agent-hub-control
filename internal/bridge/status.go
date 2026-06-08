@@ -41,9 +41,15 @@ func runStatus(user string) error {
 		tenant = "(default)"
 	}
 
+	bridgeType := entry.BridgeType
+	if bridgeType == "" {
+		bridgeType = "bridge-claude2"
+	}
+
 	fmt.Printf("handle:   @%s\n", entry.Handle)
 	fmt.Printf("status:   %s\n", status)
 	fmt.Printf("pid:      %d\n", entry.PID)
+	fmt.Printf("type:     %s\n", bridgeType)
 	fmt.Printf("tenant:   %s\n", tenant)
 	fmt.Printf("workdir:  %s\n", entry.Workdir)
 	fmt.Printf("log:      %s\n", entry.LogPath)
