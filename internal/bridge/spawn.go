@@ -91,6 +91,15 @@ func runSpawn(user, bridgeType, workdir, tenantFlag string, timeoutS int) error 
 		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", user, entry.PID, user)
 	}
 
+	// bridges.json に記録がなくても orphan プロセスが残っている場合を検出する (issue #14)
+	if pid, err := pgrepHandle(user); err != nil {
+		unlock()
+		return fmt.Errorf("pgrep check: %w", err)
+	} else if pid != 0 {
+		unlock()
+		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", user, pid, user)
+	}
+
 	// ログファイルをクリア
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -226,3 +235,33 @@ func pidString(pid int) string {
 
 // suppress unused warning
 var _ = pidString
+
+// pgrepHandle は "--user <handle>" を cmdline に持つプロセスを pgrep で検索する。
+// bridges.json に記録のない orphan プロセスの検出に使う (issue #14)。
+// 見つかった場合は最初の PID を返す。見つからない / pgrep 非対応の場合は 0 を返す。
+func pgrepHandle(handle string) (int, error) {
+	pattern := "--user " + handle
+	out, err := exec.Command("pgrep", "-f", "--", pattern).Output()
+	if err != nil {
+		// exit code 1 = no match (success case)
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return 0, nil
+		}
+		// pgrep 不在または予期しないエラー: チェックをスキップして続行
+		return 0, nil
+	}
+
+	selfPID := os.Getpid()
+	for _, field := range strings.Fields(strings.TrimSpace(string(out))) {
+		pid, parseErr := strconv.Atoi(field)
+		if parseErr != nil {
+			continue
+		}
+		if pid == selfPID {
+			// agenthubctl 自身も --user <handle> を含むのでスキップ
+			continue
+		}
+		return pid, nil
+	}
+	return 0, nil
+}
