@@ -75,18 +75,23 @@ func runSpawn(user, workdir, tenantFlag string, timeoutS int) error {
 
 	logPath := fmt.Sprintf("/tmp/bridge-%s.log", user)
 
-	// 既存プロセスチェック
-	st, err := state.Load()
+	// 既存プロセスチェック（ロック取得 → チェック → プロセス起動 → 保存 → 解放）
+	// ロックを保持したまま start + save まで完了させることで並列 spawn による JSON 破損を防ぐ。
+	// ready 待機はロック解放後に行い、長時間ロック保持を回避する。
+	st, unlock, err := state.LoadLocked()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
+
 	if entry := st.Get(user); entry != nil && entry.IsRunning() {
+		unlock()
 		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", user, entry.PID, user)
 	}
 
 	// ログファイルをクリア
 	logFile, err := os.Create(logPath)
 	if err != nil {
+		unlock()
 		return fmt.Errorf("create log file: %w", err)
 	}
 	logFile.Close()
@@ -100,6 +105,7 @@ func runSpawn(user, workdir, tenantFlag string, timeoutS int) error {
 	proc := exec.Command(binary, args...)
 	logOut, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
+		unlock()
 		return fmt.Errorf("open log file: %w", err)
 	}
 	defer logOut.Close()
@@ -113,12 +119,21 @@ func runSpawn(user, workdir, tenantFlag string, timeoutS int) error {
 	fmt.Fprintf(os.Stderr, "starting @%s (workdir=%s, log=%s)\n", user, wd, logPath)
 
 	if err := proc.Start(); err != nil {
+		unlock()
 		return fmt.Errorf("start bridge: %w", err)
 	}
 
 	pid := proc.Process.Pid
 
-	// ready シグナル待機
+	// PID をロック保持中に即保存してから解放する
+	st.Set(user, pid, wd, tenant, logPath)
+	if err := st.Save(); err != nil {
+		unlock()
+		return fmt.Errorf("save state: %w", err)
+	}
+	unlock()
+
+	// ready シグナル待機（ロック解放後）
 	deadline := time.Now().Add(time.Duration(timeoutS) * time.Second)
 	ready := false
 
@@ -131,16 +146,10 @@ func runSpawn(user, workdir, tenantFlag string, timeoutS int) error {
 	}
 
 	if !ready {
-		// タイムアウト時もプロセスを残し、PID を保存しておく
+		// タイムアウト時もプロセスを残す（PID は保存済み）
 		fmt.Fprintf(os.Stderr, "warning: timeout waiting for %q (pid=%d). Check log: %s\n", readyPattern, pid, logPath)
 	} else {
 		fmt.Printf("ok pid=%d\n", pid)
-	}
-
-	// 状態を保存
-	st.Set(user, pid, wd, tenant, logPath)
-	if err := st.Save(); err != nil {
-		return fmt.Errorf("save state: %w", err)
 	}
 
 	return nil

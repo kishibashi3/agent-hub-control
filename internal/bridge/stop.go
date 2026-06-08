@@ -23,14 +23,14 @@ func NewStopCmd() *cobra.Command {
 }
 
 func runStop(user string) error {
-	st, err := state.Load()
+	st, unlock, err := state.LoadLocked()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
+	defer unlock()
 
 	entry := st.Get(user)
 	if entry == nil {
-		// state にない場合は pgrep で探す
 		return fmt.Errorf("@%s not found in state. Use `bridge list` to see running bridges.", user)
 	}
 
