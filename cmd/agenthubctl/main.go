@@ -6,6 +6,7 @@
 //	agenthubctl bridge stop <handle>
 //	agenthubctl bridge list
 //	agenthubctl bridge status <handle>
+//	agenthubctl bridge logs [--follow|-f] <handle>
 //
 // 環境変数:
 //
@@ -43,6 +44,7 @@ func main() {
 		bridge.NewStopCmd(),
 		bridge.NewListCmd(),
 		bridge.NewStatusCmd(),
+		bridge.NewLogsCmd(),
 	)
 
 	root.AddCommand(bridgeCmd)
