@@ -33,7 +33,7 @@ func runList() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTENANT\tWORKDIR\tSTARTED")
+	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTYPE\tTENANT\tWORKDIR\tSTARTED")
 
 	for _, e := range st.Bridges {
 		status := "stopped"
@@ -44,8 +44,12 @@ func runList() error {
 		if tenant == "" {
 			tenant = "(default)"
 		}
-		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\n",
-			e.Handle, status, e.PID, tenant, e.Workdir, e.StartedAt)
+		bridgeType := e.BridgeType
+		if bridgeType == "" {
+			bridgeType = "bridge-claude2"
+		}
+		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+			e.Handle, status, e.PID, bridgeType, tenant, e.Workdir, e.StartedAt)
 	}
 
 	return w.Flush()
