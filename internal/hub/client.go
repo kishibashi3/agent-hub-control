@@ -69,10 +69,17 @@ func NewClient() (*Client, error) {
 	pat := os.Getenv("GITHUB_PAT")
 	if pat != "" {
 		c.authHeader = authHeader{key: "Authorization", value: "Bearer " + pat}
+		// warn once if deprecated AGENT_HUB_USER override is still in use
+		if os.Getenv("AGENT_HUB_PARTICIPANT") == "" && os.Getenv("AGENT_HUB_USER") != "" {
+			fmt.Fprintln(os.Stderr, "warning: AGENT_HUB_USER is deprecated; use AGENT_HUB_PARTICIPANT instead")
+		}
+	} else if participant := os.Getenv("AGENT_HUB_PARTICIPANT"); participant != "" {
+		c.authHeader = authHeader{key: "X-Participant-Id", value: participant}
 	} else if user := os.Getenv("AGENT_HUB_USER"); user != "" {
-		c.authHeader = authHeader{key: "X-User-Id", value: user}
+		fmt.Fprintln(os.Stderr, "warning: AGENT_HUB_USER is deprecated; use AGENT_HUB_PARTICIPANT instead")
+		c.authHeader = authHeader{key: "X-Participant-Id", value: user}
 	} else {
-		return nil, fmt.Errorf("set GITHUB_PAT (pat mode) or AGENT_HUB_USER (trust mode)")
+		return nil, fmt.Errorf("set GITHUB_PAT (pat mode) or AGENT_HUB_PARTICIPANT (trust mode)")
 	}
 
 	if err := c.initialize(); err != nil {
@@ -201,8 +208,10 @@ func (c *Client) post(req rpcRequest, sessionID string) (*http.Response, error) 
 	if tenant := os.Getenv("AGENT_HUB_TENANT"); tenant != "" {
 		httpReq.Header.Set("X-Tenant-Id", tenant)
 	}
-	if userOverride := os.Getenv("AGENT_HUB_USER"); userOverride != "" && c.authHeader.key == "Authorization" {
-		httpReq.Header.Set("X-User-Id", userOverride)
+	if override := os.Getenv("AGENT_HUB_PARTICIPANT"); override != "" && c.authHeader.key == "Authorization" {
+		httpReq.Header.Set("X-Participant-Id", override)
+	} else if override := os.Getenv("AGENT_HUB_USER"); override != "" && c.authHeader.key == "Authorization" {
+		httpReq.Header.Set("X-Participant-Id", override)
 	}
 	if sessionID != "" {
 		httpReq.Header.Set("mcp-session-id", sessionID)

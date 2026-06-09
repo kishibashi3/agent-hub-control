@@ -30,19 +30,26 @@ func NewSpawnCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "spawn --user <handle> --workdir <path>",
+		Use:   "spawn --participant <handle> --workdir <path>",
 		Short: "Spawn a bridge worker",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			user, _ := cmd.Flags().GetString("user")
-			if user == "" {
-				return fmt.Errorf("--user is required")
+			participant, _ := cmd.Flags().GetString("participant")
+			if participant == "" {
+				if u, _ := cmd.Flags().GetString("user"); u != "" {
+					participant = u
+				}
 			}
-			return runSpawn(user, bridgeType, workdir, tenant, timeout)
+			if participant == "" {
+				return fmt.Errorf("--participant is required")
+			}
+			return runSpawn(participant, bridgeType, workdir, tenant, timeout)
 		},
 	}
 
-	cmd.Flags().StringP("user", "u", "", "agent-hub handle (without @) [required]")
+	cmd.Flags().StringP("participant", "p", "", "agent-hub handle (without @) [required]")
+	cmd.Flags().StringP("user", "u", "", "alias for --participant (deprecated)")
+	_ = cmd.Flags().MarkDeprecated("user", "use --participant / -p instead")
 	cmd.Flags().StringVarP(&workdir, "workdir", "w", "", "peer workdir with CLAUDE.md (default: cwd)")
 	cmd.Flags().StringVar(&tenant, "tenant", "", "tenant ID (overrides AGENT_HUB_TENANT env)")
 	cmd.Flags().StringVar(&bridgeType, "type", defaultBridgeType, "bridge type (bridge-claude2, bridge-codex2, bridge-gemini, …)")
@@ -51,7 +58,7 @@ func NewSpawnCmd() *cobra.Command {
 	return cmd
 }
 
-func runSpawn(user, bridgeType, workdir, tenantFlag string, timeoutS int) error {
+func runSpawn(participant, bridgeType, workdir, tenantFlag string, timeoutS int) error {
 	binary, err := resolveBinary(bridgeType)
 	if err != nil {
 		return err
@@ -77,7 +84,7 @@ func runSpawn(user, bridgeType, workdir, tenantFlag string, timeoutS int) error 
 		tenant = os.Getenv("AGENT_HUB_TENANT")
 	}
 
-	logPath := fmt.Sprintf("/tmp/bridge-%s.log", user)
+	logPath := fmt.Sprintf("/tmp/bridge-%s.log", participant)
 
 	// 既存プロセスチェック（ロック取得 → チェック → プロセス起動 → 保存 → 解放）
 	// ロックを保持したまま start + save まで完了させることで並列 spawn による JSON 破損を防ぐ。
@@ -87,18 +94,18 @@ func runSpawn(user, bridgeType, workdir, tenantFlag string, timeoutS int) error 
 		return fmt.Errorf("load state: %w", err)
 	}
 
-	if entry := st.Get(user); entry != nil && entry.IsRunning() {
+	if entry := st.Get(participant); entry != nil && entry.IsRunning() {
 		unlock()
-		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", user, entry.PID, user)
+		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", participant, entry.PID, participant)
 	}
 
 	// bridges.json に記録がなくても orphan プロセスが残っている場合を検出する (issue #14)
-	if pid, err := pgrepHandle(user); err != nil {
+	if pid, err := pgrepHandle(participant); err != nil {
 		unlock()
 		return fmt.Errorf("pgrep check: %w", err)
 	} else if pid != 0 {
 		unlock()
-		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", user, pid, user)
+		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", participant, pid, participant)
 	}
 
 	// ログファイルをクリア
@@ -110,7 +117,7 @@ func runSpawn(user, bridgeType, workdir, tenantFlag string, timeoutS int) error 
 	logFile.Close()
 
 	// bridge 起動
-	args := []string{"--user", user, "--workdir", wd}
+	args := []string{"--participant", participant, "--workdir", wd}
 	if tenant != "" {
 		args = append(args, "--tenant", tenant)
 	}
@@ -134,7 +141,7 @@ func runSpawn(user, bridgeType, workdir, tenantFlag string, timeoutS int) error 
 	// プロセスグループから切り離す (nohup 相当)
 	setSysProcAttr(proc)
 
-	fmt.Fprintf(os.Stderr, "starting @%s (type=%s, workdir=%s, log=%s)\n", user, bridgeType, wd, logPath)
+	fmt.Fprintf(os.Stderr, "starting @%s (type=%s, workdir=%s, log=%s)\n", participant, bridgeType, wd, logPath)
 
 	if err := proc.Start(); err != nil {
 		unlock()
@@ -144,7 +151,7 @@ func runSpawn(user, bridgeType, workdir, tenantFlag string, timeoutS int) error 
 	pid := proc.Process.Pid
 
 	// PID をロック保持中に即保存してから解放する
-	st.Set(user, pid, bridgeType, wd, tenant, logPath)
+	st.Set(participant, pid, bridgeType, wd, tenant, logPath)
 	if err := st.Save(); err != nil {
 		unlock()
 		return fmt.Errorf("save state: %w", err)
@@ -242,11 +249,11 @@ func pidString(pid int) string {
 // suppress unused warning
 var _ = pidString
 
-// pgrepHandle は "--user <handle>" を cmdline に持つプロセスを pgrep で検索する。
+// pgrepHandle は "--participant <handle>" を cmdline に持つプロセスを pgrep で検索する。
 // bridges.json に記録のない orphan プロセスの検出に使う (issue #14)。
 // 見つかった場合は最初の PID を返す。見つからない / pgrep 非対応の場合は 0 を返す。
 func pgrepHandle(handle string) (int, error) {
-	pattern := "--user " + handle
+	pattern := "--participant " + handle
 	out, err := exec.Command("pgrep", "-f", "--", pattern).Output()
 	if err != nil {
 		// exit code 1 = no match (success case)

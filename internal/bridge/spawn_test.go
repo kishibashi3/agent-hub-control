@@ -26,8 +26,8 @@ func TestPgrepHandleNoMatch(t *testing.T) {
 	}
 }
 
-// TestPgrepHandleFindsProcess は --user <handle> で起動したプロセスを検出できることを確認する。
-// sh スクリプトとして起動することで cmdline に --user <handle> が残り続ける。
+// TestPgrepHandleFindsProcess は --participant <handle> で起動したプロセスを検出できることを確認する。
+// sh スクリプトとして起動することで cmdline に --participant <handle> が残り続ける。
 func TestPgrepHandleFindsProcess(t *testing.T) {
 	if _, err := exec.LookPath("pgrep"); err != nil {
 		t.Skip("pgrep not available")
@@ -44,9 +44,9 @@ func TestPgrepHandleFindsProcess(t *testing.T) {
 		t.Fatalf("testdata/fake-bridge.sh not found: %v", err)
 	}
 
-	// sh <script> --user <handle> の形で起動すると sh プロセスの cmdline に
-	// "--user <handle>" が含まれ、pgrep -f で検出できる。
-	fake := exec.Command("/bin/sh", scriptPath, "--user", handle)
+	// sh <script> --participant <handle> の形で起動すると sh プロセスの cmdline に
+	// "--participant <handle>" が含まれ、pgrep -f で検出できる。
+	fake := exec.Command("/bin/sh", scriptPath, "--participant", handle)
 	if err := fake.Start(); err != nil {
 		t.Fatalf("failed to start fake process: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestPgrepHandleFindsProcess(t *testing.T) {
 	}
 	// 返ってきた PID が fake のもの、または pgrep 結果に fake PID が含まれることを確認
 	if pid != fakePID {
-		out, _ := exec.Command("pgrep", "-f", "--", "--user "+handle).Output()
+		out, _ := exec.Command("pgrep", "-f", "--", "--participant "+handle).Output()
 		pids := strings.Fields(strings.TrimSpace(string(out)))
 		found := false
 		for _, p := range pids {
