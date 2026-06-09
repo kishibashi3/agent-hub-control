@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kishibashi3/agent-hub-control/internal/config"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -112,6 +113,11 @@ func runSpawn(user, bridgeType, workdir, tenantFlag string, timeoutS int) error 
 	args := []string{"--user", user, "--workdir", wd}
 	if tenant != "" {
 		args = append(args, "--tenant", tenant)
+	}
+	if bridgeType == "bridge-claude2" {
+		if cfg, cfgErr := config.Load(); cfgErr == nil && cfg.SubprocessTimeoutS > 0 {
+			args = append(args, "-subprocess-timeout", fmt.Sprintf("%ds", cfg.SubprocessTimeoutS))
+		}
 	}
 
 	proc := exec.Command(binary, args...)
