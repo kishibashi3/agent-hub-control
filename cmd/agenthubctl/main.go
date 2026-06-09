@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	agenthubctl bridge spawn --user <handle> --workdir <path> [--type <bridge-type>]
+//	agenthubctl bridge spawn --participant <handle> --workdir <path> [--type <bridge-type>]
 //	agenthubctl bridge stop <handle>
 //	agenthubctl bridge list
 //	agenthubctl bridge status <handle>
