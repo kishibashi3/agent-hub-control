@@ -58,7 +58,7 @@ type toolCallResult struct {
 func NewClient() (*Client, error) {
 	baseURL := os.Getenv("AGENT_HUB_URL")
 	if baseURL == "" {
-		return nil, fmt.Errorf("AGENT_HUB_URL is not set")
+		return nil, fmt.Errorf("AGENT_HUB_URL must be set (agent-hub MCP endpoint)")
 	}
 
 	c := &Client{

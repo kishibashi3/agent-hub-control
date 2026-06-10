@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -58,7 +59,13 @@ func NewSpawnCmd() *cobra.Command {
 	return cmd
 }
 
+var validHandle = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 func runSpawn(participant, bridgeType, workdir, tenantFlag string, timeoutS int) error {
+	if !validHandle.MatchString(participant) {
+		return fmt.Errorf("invalid handle %q: only [a-zA-Z0-9_-] allowed", participant)
+	}
+
 	binary, err := resolveBinary(bridgeType)
 	if err != nil {
 		return err
