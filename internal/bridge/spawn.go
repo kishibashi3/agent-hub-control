@@ -129,7 +129,12 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag string, timeoutS int)
 		args = append(args, "--tenant", tenant)
 	}
 	if bridgeType == "bridge-claude2" {
-		if cfg, cfgErr := config.Load(); cfgErr == nil && cfg.SubprocessTimeoutS > 0 {
+		cfg, cfgErr := config.Load()
+		if cfgErr != nil {
+			fmt.Fprintf(os.Stderr, "config: %v\n", cfgErr)
+			os.Exit(1)
+		}
+		if cfg.SubprocessTimeoutS > 0 {
 			args = append(args, "-subprocess-timeout", fmt.Sprintf("%ds", cfg.SubprocessTimeoutS))
 		}
 	}
