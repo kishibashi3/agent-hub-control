@@ -86,10 +86,10 @@ func migrateIfNeeded(newPath string) error {
 	if err != nil {
 		return fmt.Errorf("read old state: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	if err := os.WriteFile(newPath, data, 0o644); err != nil {
+	if err := os.WriteFile(newPath, data, 0o600); err != nil {
 		return fmt.Errorf("write new state: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "info: migrated state %s → %s\n", oldPath, newPath)
@@ -117,11 +117,11 @@ func LoadLocked() (*State, func(), error) {
 	}
 
 	lockPath := path + ".lock"
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("mkdir state dir: %w", err)
 	}
 
-	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open lockfile: %w", err)
 	}
@@ -164,7 +164,7 @@ func loadFromPath(path string) (*State, error) {
 
 // Save は状態をディスクに atomic に書き込む（tempfile + rename）。
 func (s *State) Save() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("mkdir state dir: %w", err)
 	}
 
@@ -174,7 +174,7 @@ func (s *State) Save() error {
 	}
 
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write state tmp: %w", err)
 	}
 
