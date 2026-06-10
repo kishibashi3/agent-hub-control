@@ -99,52 +99,13 @@ func statePath() (string, error) {
 	return filepath.Join(d, "bridges.json"), nil
 }
 
-// Load はディスクから状態を読み込む（読み取り専用操作用）。ファイルが存在しない場合は空の State を返す。
+// Load はディスクから状態を読み込む。ファイルが存在しない場合は空の State を返す。
 func Load() (*State, error) {
 	path, err := statePath()
 	if err != nil {
 		return nil, err
 	}
-	return loadFromPath(path)
-}
 
-// LoadLocked はディスクから状態を排他ロック付きで読み込む。
-// 返された unlock 関数は必ず呼ぶこと（defer 推奨）。Save() を伴う操作はこちらを使う。
-func LoadLocked() (*State, func(), error) {
-	path, err := statePath()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	lockPath := path + ".lock"
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		return nil, nil, fmt.Errorf("mkdir state dir: %w", err)
-	}
-
-	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open lockfile: %w", err)
-	}
-
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
-		_ = lf.Close()
-		return nil, nil, fmt.Errorf("flock: %w", err)
-	}
-
-	unlock := func() {
-		_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
-		_ = lf.Close()
-	}
-
-	s, err := loadFromPath(path)
-	if err != nil {
-		unlock()
-		return nil, nil, err
-	}
-	return s, unlock, nil
-}
-
-func loadFromPath(path string) (*State, error) {
 	s := &State{Bridges: make(map[string]*Entry), path: path}
 
 	data, err := os.ReadFile(path)
@@ -162,7 +123,7 @@ func loadFromPath(path string) (*State, error) {
 	return s, nil
 }
 
-// Save は状態をディスクに atomic に書き込む（tempfile + rename）。
+// Save は状態をディスクに書き込む。
 func (s *State) Save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("mkdir state dir: %w", err)
@@ -173,14 +134,8 @@ func (s *State) Save() error {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("write state tmp: %w", err)
-	}
-
-	if err := os.Rename(tmp, s.path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename state: %w", err)
+	if err := os.WriteFile(s.path, data, 0o644); err != nil {
+		return fmt.Errorf("write state: %w", err)
 	}
 	return nil
 }
