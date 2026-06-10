@@ -12,7 +12,7 @@ import (
 // issue #11: 並列 spawn で bridges.json が破損するバグの再現テスト。
 func TestLoadLockedConcurrent(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmp)
+	t.Setenv("AGENT_HUB_HOME", tmp)
 
 	const n = 8
 	var wg sync.WaitGroup

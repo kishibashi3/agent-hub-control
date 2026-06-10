@@ -1,4 +1,4 @@
-// state.go — bridge state persistence (~/.local/share/agenthubctl/bridges.json)
+// state.go — bridge state persistence (~/.agent-hub/state/bridges.json)
 package state
 
 import (
@@ -9,47 +9,6 @@ import (
 	"syscall"
 	"time"
 )
-
-func lockFilePath() (string, error) {
-	d, err := stateDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(d, "bridges.lock"), nil
-}
-
-// LoadLocked はファイルロック（LOCK_EX）を取得してから State を読み込む。
-// 返された unlock を必ず呼び出すこと（defer 推奨）。
-// ロックは bridges.lock ファイルへの syscall.Flock で実装される。
-// Save() 完了後に unlock を呼ぶことで read-modify-write がアトミックになる。
-func LoadLocked() (*State, func(), error) {
-	lp, err := lockFilePath()
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(lp), 0o755); err != nil {
-		return nil, nil, fmt.Errorf("mkdir lock dir: %w", err)
-	}
-	lf, err := os.OpenFile(lp, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open lock file: %w", err)
-	}
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
-		lf.Close()
-		return nil, nil, fmt.Errorf("flock acquire: %w", err)
-	}
-	st, err := Load()
-	if err != nil {
-		_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
-		lf.Close()
-		return nil, nil, err
-	}
-	unlock := func() {
-		_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
-		lf.Close()
-	}
-	return st, unlock, nil
-}
 
 // Entry は 1 つの bridge プロセスの状態を表す。
 type Entry struct {
@@ -81,14 +40,14 @@ type State struct {
 }
 
 func stateDir() (string, error) {
-	if base := os.Getenv("XDG_DATA_HOME"); base != "" {
-		return filepath.Join(base, "agenthubctl"), nil
+	if base := os.Getenv("AGENT_HUB_HOME"); base != "" {
+		return filepath.Join(base, "state"), nil
 	}
 	dir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
-	return filepath.Join(dir, ".local", "share", "agenthubctl"), nil
+	return filepath.Join(dir, ".agent-hub", "state"), nil
 }
 
 func statePath() (string, error) {
@@ -99,11 +58,52 @@ func statePath() (string, error) {
 	return filepath.Join(d, "bridges.json"), nil
 }
 
+// oldStatePath は旧パス (~/.local/share/agenthubctl/bridges.json) を返す。マイグレーション用。
+func oldStatePath() (string, error) {
+	if base := os.Getenv("XDG_DATA_HOME"); base != "" {
+		return filepath.Join(base, "agenthubctl", "bridges.json"), nil
+	}
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(dir, ".local", "share", "agenthubctl", "bridges.json"), nil
+}
+
+// migrateIfNeeded は新パスが存在しない場合に旧パスから自動コピーする。
+func migrateIfNeeded(newPath string) error {
+	if _, err := os.Stat(newPath); err == nil {
+		return nil // 新パスが既にある場合はスキップ
+	}
+	oldPath, err := oldStatePath()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(oldPath)
+	if os.IsNotExist(err) {
+		return nil // 旧ファイルも存在しない — 初回起動
+	}
+	if err != nil {
+		return fmt.Errorf("read old state: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	if err := os.WriteFile(newPath, data, 0o644); err != nil {
+		return fmt.Errorf("write new state: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "info: migrated state %s → %s\n", oldPath, newPath)
+	return nil
+}
+
 // Load はディスクから状態を読み込む（読み取り専用操作用）。ファイルが存在しない場合は空の State を返す。
 func Load() (*State, error) {
 	path, err := statePath()
 	if err != nil {
 		return nil, err
+	}
+	if err := migrateIfNeeded(path); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: state migration failed: %v\n", err)
 	}
 	return loadFromPath(path)
 }

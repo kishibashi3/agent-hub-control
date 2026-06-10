@@ -108,13 +108,6 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag string, timeoutS int)
 		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", participant, pid, participant)
 	}
 
-	// bridges.json に記録がなくても orphan プロセスが残っている場合を検出する (issue #14)
-	if pid, err := pgrepHandle(user); err != nil {
-		return fmt.Errorf("pgrep check: %w", err)
-	} else if pid != 0 {
-		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", user, pid, user)
-	}
-
 	// ログファイルをクリア
 	logFile, err := os.Create(logPath)
 	if err != nil {
