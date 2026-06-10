@@ -24,10 +24,11 @@ const (
 
 func NewSpawnCmd() *cobra.Command {
 	var (
-		workdir    string
-		tenant     string
-		bridgeType string
-		timeout    int
+		workdir     string
+		tenant      string
+		bridgeType  string
+		timeout     int
+		displayName string
 	)
 
 	cmd := &cobra.Command{
@@ -44,7 +45,7 @@ func NewSpawnCmd() *cobra.Command {
 			if participant == "" {
 				return fmt.Errorf("--participant is required")
 			}
-			return runSpawn(participant, bridgeType, workdir, tenant, timeout)
+			return runSpawn(participant, bridgeType, workdir, tenant, displayName, timeout)
 		},
 	}
 
@@ -55,13 +56,14 @@ func NewSpawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tenant, "tenant", "", "tenant ID (overrides AGENT_HUB_TENANT env)")
 	cmd.Flags().StringVar(&bridgeType, "type", defaultBridgeType, "bridge type (bridge-claude2, bridge-codex2, bridge-gemini, …)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal")
+	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge for register (e.g. \"Researcher — issue investigation\")")
 
 	return cmd
 }
 
 var validHandle = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-func runSpawn(participant, bridgeType, workdir, tenantFlag string, timeoutS int) error {
+func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, timeoutS int) error {
 	if !validHandle.MatchString(participant) {
 		return fmt.Errorf("invalid handle %q: only [a-zA-Z0-9_-] allowed", participant)
 	}
@@ -136,6 +138,9 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag string, timeoutS int)
 		}
 		if cfg.SubprocessTimeoutS > 0 {
 			args = append(args, "-subprocess-timeout", fmt.Sprintf("%ds", cfg.SubprocessTimeoutS))
+		}
+		if displayName != "" {
+			args = append(args, "-display-name", displayName)
 		}
 	}
 
