@@ -1,4 +1,4 @@
-// state.go — bridge state persistence (~/.local/share/agenthubctl/bridges.json)
+// state.go — bridge state persistence (~/.agent-hub/state/bridges.json)
 package state
 
 import (
@@ -40,14 +40,14 @@ type State struct {
 }
 
 func stateDir() (string, error) {
-	if base := os.Getenv("XDG_DATA_HOME"); base != "" {
-		return filepath.Join(base, "agenthubctl"), nil
+	if base := os.Getenv("AGENT_HUB_HOME"); base != "" {
+		return filepath.Join(base, "state"), nil
 	}
 	dir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
-	return filepath.Join(dir, ".local", "share", "agenthubctl"), nil
+	return filepath.Join(dir, ".agent-hub", "state"), nil
 }
 
 func statePath() (string, error) {
@@ -58,11 +58,52 @@ func statePath() (string, error) {
 	return filepath.Join(d, "bridges.json"), nil
 }
 
+// oldStatePath は旧パス (~/.local/share/agenthubctl/bridges.json) を返す。マイグレーション用。
+func oldStatePath() (string, error) {
+	if base := os.Getenv("XDG_DATA_HOME"); base != "" {
+		return filepath.Join(base, "agenthubctl", "bridges.json"), nil
+	}
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(dir, ".local", "share", "agenthubctl", "bridges.json"), nil
+}
+
+// migrateIfNeeded は新パスが存在しない場合に旧パスから自動コピーする。
+func migrateIfNeeded(newPath string) error {
+	if _, err := os.Stat(newPath); err == nil {
+		return nil // 新パスが既にある場合はスキップ
+	}
+	oldPath, err := oldStatePath()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(oldPath)
+	if os.IsNotExist(err) {
+		return nil // 旧ファイルも存在しない — 初回起動
+	}
+	if err != nil {
+		return fmt.Errorf("read old state: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	if err := os.WriteFile(newPath, data, 0o600); err != nil {
+		return fmt.Errorf("write new state: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "info: migrated state %s → %s\n", oldPath, newPath)
+	return nil
+}
+
 // Load はディスクから状態を読み込む（読み取り専用操作用）。ファイルが存在しない場合は空の State を返す。
 func Load() (*State, error) {
 	path, err := statePath()
 	if err != nil {
 		return nil, err
+	}
+	if err := migrateIfNeeded(path); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: state migration failed: %v\n", err)
 	}
 	return loadFromPath(path)
 }
@@ -76,11 +117,11 @@ func LoadLocked() (*State, func(), error) {
 	}
 
 	lockPath := path + ".lock"
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("mkdir state dir: %w", err)
 	}
 
-	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open lockfile: %w", err)
 	}
@@ -123,7 +164,7 @@ func loadFromPath(path string) (*State, error) {
 
 // Save は状態をディスクに atomic に書き込む（tempfile + rename）。
 func (s *State) Save() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("mkdir state dir: %w", err)
 	}
 
@@ -133,7 +174,7 @@ func (s *State) Save() error {
 	}
 
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write state tmp: %w", err)
 	}
 
