@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -22,6 +23,7 @@ type Entry struct {
 }
 
 // IsRunning はプロセスが実行中かどうかを返す。
+// PID 再利用による誤判定を防ぐため /proc/<pid>/comm でプロセス名も確認する。
 func (e *Entry) IsRunning() bool {
 	if e.PID <= 0 {
 		return false
@@ -30,7 +32,19 @@ func (e *Entry) IsRunning() bool {
 	if err != nil {
 		return false
 	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	if proc.Signal(syscall.Signal(0)) != nil {
+		return false
+	}
+	// PID reuse guard: bridge type が記録されている場合はプロセス名と突合する (issue #1)
+	if e.BridgeType == "" {
+		return true
+	}
+	comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", e.PID))
+	if err != nil {
+		// /proc が読めない環境（非 Linux 等）はスキップ
+		return true
+	}
+	return strings.TrimSpace(string(comm)) == e.BridgeType
 }
 
 // State は全 bridge エントリのコレクション。
@@ -133,7 +147,7 @@ func (s *State) Save() error {
 	}
 
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write state tmp: %w", err)
 	}
 
