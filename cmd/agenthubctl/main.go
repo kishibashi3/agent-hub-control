@@ -4,6 +4,7 @@
 //
 //	agenthubctl bridge spawn --participant <handle> --workdir <path> [--type <bridge-type>]
 //	agenthubctl bridge stop <handle>
+//	agenthubctl bridge restart <handle>
 //	agenthubctl bridge list
 //	agenthubctl bridge status <handle>
 //	agenthubctl bridge logs [--follow|-f] <handle>
@@ -48,6 +49,7 @@ func main() {
 	bridgeCmd.AddCommand(
 		bridge.NewSpawnCmd(),
 		bridge.NewStopCmd(),
+		bridge.NewRestartCmd(),
 		bridge.NewListCmd(),
 		bridge.NewStatusCmd(),
 		bridge.NewLogsCmd(),
