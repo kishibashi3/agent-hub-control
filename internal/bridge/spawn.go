@@ -83,7 +83,7 @@ func NewSpawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tenant, "tenant", "", "tenant ID (overrides saved config and AGENT_HUB_TENANT env)")
 	cmd.Flags().StringVar(&bridgeType, "type", defaultBridgeType, "bridge type (bridge-claude2, bridge-codex2, bridge-gemini, …)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal")
-	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge for register (e.g. \"Researcher — issue investigation\")")
+	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge for register (falls back to bridge config)")
 
 	return cmd
 }

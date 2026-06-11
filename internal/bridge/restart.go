@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -37,7 +38,14 @@ func NewRestartCmd() *cobra.Command {
 			if len(args) == 0 {
 				return fmt.Errorf("either <handle> or --all is required")
 			}
-			return runRestart(args[0], displayName, timeout)
+			handle := args[0]
+			// Fall back to bridge config for display-name when not provided via flag.
+			if !cmd.Flags().Changed("display-name") {
+				if cfg, err := bridgecfg.Load(handle); err == nil && cfg != nil && cfg.DisplayName != "" {
+					displayName = cfg.DisplayName
+				}
+			}
+			return runRestart(handle, displayName, timeout)
 		},
 	}
 
