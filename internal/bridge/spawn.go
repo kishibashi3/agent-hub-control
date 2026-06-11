@@ -302,8 +302,9 @@ func pidString(pid int) string {
 // suppress unused warning
 var _ = pidString
 
-// pgrepHandle は "--participant <handle>" を cmdline に持つプロセスを pgrep で検索する。
-// bridges.json に記録のない orphan プロセスの検出に使う (issue #14)。
+// pgrepHandle は "--participant <handle>" または "--user <handle>" を cmdline に持つプロセスを
+// pgrep で検索する。bridges.json に記録のない orphan プロセスの検出に使う (issue #14)。
+// --user は旧フラグ名（v0.3.0 以前）。旧バイナリで起動した orphan も検出できるよう両方を確認する。
 // 見つかった場合は最初の PID を返す。見つからない / pgrep 非対応の場合は 0 を返す。
 //
 // pgrep -f は cmdline 文字列に当該パターンを含む「任意の」プロセスにマッチするため、
@@ -312,36 +313,38 @@ var _ = pidString
 // agenthubctl を除外できないので、候補ごとに実 argv を /proc から読み直し、
 // 本物の bridge ワーカーであることを looksLikeBridgeProcess で確認してから返す。
 func pgrepHandle(handle string) (int, error) {
-	pattern := "--participant " + handle
-	out, err := exec.Command("pgrep", "-f", "--", pattern).Output()
-	if err != nil {
-		// exit code 1 = no match (success case)
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+	selfPID := os.Getpid()
+	for _, flag := range []string{"--participant", "--user"} {
+		pattern := flag + " " + handle
+		out, err := exec.Command("pgrep", "-f", "--", pattern).Output()
+		if err != nil {
+			// exit code 1 = no match (success case)
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				continue
+			}
+			// pgrep 不在または予期しないエラー: チェックをスキップして続行
 			return 0, nil
 		}
-		// pgrep 不在または予期しないエラー: チェックをスキップして続行
-		return 0, nil
-	}
 
-	selfPID := os.Getpid()
-	for _, field := range strings.Fields(strings.TrimSpace(string(out))) {
-		pid, parseErr := strconv.Atoi(field)
-		if parseErr != nil {
-			continue
+		for _, field := range strings.Fields(strings.TrimSpace(string(out))) {
+			pid, parseErr := strconv.Atoi(field)
+			if parseErr != nil {
+				continue
+			}
+			if pid == selfPID {
+				// agenthubctl 自身も --participant <handle> を含むのでスキップ
+				continue
+			}
+			// pgrep の substring マッチを実 argv で検証する。これにより
+			//   - 親 "bash -c '... --participant <handle> ...'" ラッパー (argv[0]=bash)
+			//   - 別 invocation の agenthubctl (argv[0]=agenthubctl, --participant は
+			//     spawn サブコマンドの引数であって bridge バイナリの引数ではない)
+			// を除外し、本物の orphan bridge だけを検出する (issue #31)。
+			if !looksLikeBridgeProcess(readCmdline(pid), handle) {
+				continue
+			}
+			return pid, nil
 		}
-		if pid == selfPID {
-			// agenthubctl 自身も --participant <handle> を含むのでスキップ
-			continue
-		}
-		// pgrep の substring マッチを実 argv で検証する。これにより
-		//   - 親 "bash -c '... --participant <handle> ...'" ラッパー (argv[0]=bash)
-		//   - 別 invocation の agenthubctl (argv[0]=agenthubctl, --participant は
-		//     spawn サブコマンドの引数であって bridge バイナリの引数ではない)
-		// を除外し、本物の orphan bridge だけを検出する (issue #31)。
-		if !looksLikeBridgeProcess(readCmdline(pid), handle) {
-			continue
-		}
-		return pid, nil
 	}
 	return 0, nil
 }
