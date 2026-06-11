@@ -7,6 +7,7 @@
 //	agenthubctl bridge list
 //	agenthubctl bridge status <handle>
 //	agenthubctl bridge logs [--follow|-f] <handle>
+//	agenthubctl bridge prune [--dry-run]
 //	agenthubctl send <@handle> <message>
 //	agenthubctl inbox [--mark-read]
 //	agenthubctl participants [--online-only]
@@ -51,6 +52,7 @@ func main() {
 		bridge.NewListCmd(),
 		bridge.NewStatusCmd(),
 		bridge.NewLogsCmd(),
+		bridge.NewPruneCmd(),
 	)
 
 	root.AddCommand(bridgeCmd)

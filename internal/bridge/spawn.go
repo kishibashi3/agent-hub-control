@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kishibashi3/agent-hub-control/internal/config"
@@ -189,12 +190,21 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 	}
 
 	if !ready {
-		// タイムアウト時もプロセスを残す（PID は保存済み）
-		fmt.Fprintf(os.Stderr, "warning: timeout waiting for %q (pid=%d). Check log: %s\n", rp, pid, logPath)
-	} else {
-		fmt.Printf("ok pid=%d\n", pid)
+		// タイムアウト: プロセスを kill して state を巻き戻す
+		if p, findErr := os.FindProcess(pid); findErr == nil {
+			_ = p.Signal(syscall.SIGTERM)
+			time.Sleep(500 * time.Millisecond)
+			_ = p.Kill()
+		}
+		if rollbackSt, rollbackUnlock, lockErr := state.LoadLocked(); lockErr == nil {
+			rollbackSt.Delete(participant)
+			_ = rollbackSt.Save()
+			rollbackUnlock()
+		}
+		return fmt.Errorf("timeout waiting for @%s to become ready (pid=%d killed). Check log: %s", participant, pid, logPath)
 	}
 
+	fmt.Printf("ok pid=%d\n", pid)
 	return nil
 }
 
