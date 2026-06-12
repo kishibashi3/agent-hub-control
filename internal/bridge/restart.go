@@ -20,19 +20,30 @@ func NewRestartCmd() *cobra.Command {
 	var (
 		displayName string
 		timeout     int
+		all         bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "restart <handle>",
+		Use:   "restart <handle> | --all",
 		Short: "Restart a bridge worker (stop then spawn with same workdir/tenant)",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if all {
+				if len(args) > 0 {
+					return fmt.Errorf("--all and <handle> are mutually exclusive")
+				}
+				return runRestartAll(displayName, timeout)
+			}
+			if len(args) == 0 {
+				return fmt.Errorf("either <handle> or --all is required")
+			}
 			return runRestart(args[0], displayName, timeout)
 		},
 	}
 
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge on re-spawn (optional)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal after re-spawn")
+	cmd.Flags().BoolVar(&all, "all", false, "Restart all known bridge workers sequentially")
 
 	return cmd
 }
@@ -101,6 +112,37 @@ func runRestart(handle, displayName string, spawnTimeoutS int) error {
 	// ── 3. spawn ─────────────────────────────────────────────────────────
 	fmt.Fprintf(os.Stderr, "re-spawning @%s (type=%s, workdir=%s)...\n", handle, savedBridgeType, savedWorkdir)
 	return runSpawn(handle, savedBridgeType, savedWorkdir, savedTenant, displayName, spawnTimeoutS)
+}
+
+func runRestartAll(displayName string, spawnTimeoutS int) error {
+	st, err := state.Load()
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	if len(st.Bridges) == 0 {
+		fmt.Println("no bridges to restart")
+		return nil
+	}
+
+	var handles []string
+	for h := range st.Bridges {
+		handles = append(handles, h)
+	}
+
+	var failed []string
+	for _, h := range handles {
+		fmt.Fprintf(os.Stderr, "=== restarting @%s ===\n", h)
+		if err := runRestart(h, displayName, spawnTimeoutS); err != nil {
+			fmt.Fprintf(os.Stderr, "error: @%s: %v\n", h, err)
+			failed = append(failed, h)
+		}
+	}
+
+	if len(failed) > 0 {
+		return fmt.Errorf("restart failed for: %v", failed)
+	}
+	fmt.Printf("restarted %d bridge(s)\n", len(handles))
+	return nil
 }
 
 // waitForExit は pid のプロセスが終了するまでポーリングで待機する。
