@@ -6,7 +6,8 @@
 //	agenthubctl bridge stop <handle>
 //	agenthubctl bridge restart <handle>
 //	agenthubctl bridge list
-//	agenthubctl bridge status <handle>
+//	agenthubctl bridge status [handle]
+//	agenthubctl bridge sync [--dry-run]
 //	agenthubctl bridge logs [--follow|-f] <handle>
 //	agenthubctl bridge prune [--dry-run]
 //	agenthubctl send <@handle> <message>
@@ -54,6 +55,7 @@ func main() {
 		bridge.NewRestartCmd(),
 		bridge.NewListCmd(),
 		bridge.NewStatusCmd(),
+		bridge.NewSyncCmd(),
 		bridge.NewLogsCmd(),
 		bridge.NewPruneCmd(),
 		bridge.NewConfigCmd(),
