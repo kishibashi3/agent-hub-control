@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
@@ -47,6 +48,20 @@ func runStop(user string) error {
 
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("SIGTERM pid=%d: %w", entry.PID, err)
+	}
+
+	// プロセスが実際に死ぬのを最大 5 秒待つ
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		if proc.Signal(syscall.Signal(0)) != nil {
+			break
+		}
+	}
+	// まだ生きていれば SIGKILL
+	if proc.Signal(syscall.Signal(0)) == nil {
+		fmt.Fprintf(os.Stderr, "warning: pid=%d did not exit after SIGTERM, sending SIGKILL\n", entry.PID)
+		_ = proc.Kill()
 	}
 
 	fmt.Printf("stopped @%s (pid=%d)\n", user, entry.PID)
