@@ -4,6 +4,7 @@ package bridge
 import (
 	"fmt"
 	"os"
+	"text/tabwriter"
 
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
@@ -11,13 +12,47 @@ import (
 
 func NewStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status <handle>",
-		Short: "Show status of a bridge worker",
-		Args:  cobra.ExactArgs(1),
+		Use:   "status [handle]",
+		Short: "Show status of bridge worker(s). Omit handle to list all.",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return runStatusAll()
+			}
 			return runStatus(args[0])
 		},
 	}
+}
+
+func runStatusAll() error {
+	st, err := state.Load()
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	if len(st.Bridges) == 0 {
+		fmt.Println("no bridges")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTYPE\tTENANT\tSTARTED")
+	for _, e := range st.Bridges {
+		label := "DEAD"
+		if e.IsRunning() {
+			label = "LIVE"
+		}
+		tenant := e.Tenant
+		if tenant == "" {
+			tenant = "(default)"
+		}
+		bridgeType := e.BridgeType
+		if bridgeType == "" {
+			bridgeType = "bridge-claude2"
+		}
+		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\n",
+			e.Handle, label, e.PID, bridgeType, tenant, e.StartedAt)
+	}
+	return w.Flush()
 }
 
 func runStatus(user string) error {
