@@ -37,12 +37,10 @@ func NewSpawnCmd() *cobra.Command {
 		Short: "Spawn a bridge worker",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			participant, _ := cmd.Flags().GetString("participant")
-			if participant == "" {
-				if u, _ := cmd.Flags().GetString("user"); u != "" {
-					participant = u
-				}
+			if u, _ := cmd.Flags().GetString("user"); u != "" {
+				return fmt.Errorf("--user は廃止されました。--participant / -p を使用してください。")
 			}
+			participant, _ := cmd.Flags().GetString("participant")
 			if participant == "" {
 				return fmt.Errorf("--participant is required")
 			}
@@ -51,8 +49,8 @@ func NewSpawnCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringP("participant", "p", "", "agent-hub handle (without @) [required]")
-	cmd.Flags().StringP("user", "u", "", "alias for --participant (deprecated)")
-	_ = cmd.Flags().MarkDeprecated("user", "use --participant / -p instead")
+	cmd.Flags().StringP("user", "u", "", "")
+	_ = cmd.Flags().MarkHidden("user")
 	cmd.Flags().StringVarP(&workdir, "workdir", "w", "", "peer workdir with CLAUDE.md (default: cwd)")
 	cmd.Flags().StringVar(&tenant, "tenant", "", "tenant ID (overrides AGENT_HUB_TENANT env)")
 	cmd.Flags().StringVar(&bridgeType, "type", defaultBridgeType, "bridge type (bridge-claude2, bridge-codex2, bridge-gemini, …)")
