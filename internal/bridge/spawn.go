@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
 	"github.com/kishibashi3/agent-hub-control/internal/config"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
@@ -33,26 +34,53 @@ func NewSpawnCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "spawn --participant <handle> --workdir <path>",
+		Use:   "spawn [<handle>]",
 		Short: "Spawn a bridge worker",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		// Accept 0 args (--participant flag) or 1 positional arg (handle).
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if u, _ := cmd.Flags().GetString("user"); u != "" {
 				return fmt.Errorf("--user は廃止されました。--participant / -p を使用してください。")
 			}
+
+			// Resolve handle: positional arg > --participant flag.
 			participant, _ := cmd.Flags().GetString("participant")
-			if participant == "" {
-				return fmt.Errorf("--participant is required")
+			if len(args) > 0 {
+				participant = args[0]
 			}
+			if participant == "" {
+				return fmt.Errorf("handle is required (positional arg or --participant)")
+			}
+
+			// Apply saved config as defaults for unset flags.
+			cfg, err := bridgecfg.Load(participant)
+			if err != nil {
+				return fmt.Errorf("load bridge config: %w", err)
+			}
+			if cfg != nil {
+				if workdir == "" {
+					workdir = cfg.Workdir
+				}
+				if !cmd.Flags().Changed("tenant") && tenant == "" {
+					tenant = cfg.Tenant
+				}
+				if !cmd.Flags().Changed("type") && bridgeType == defaultBridgeType && cfg.BridgeType != "" {
+					bridgeType = cfg.BridgeType
+				}
+				if displayName == "" {
+					displayName = cfg.DisplayName
+				}
+			}
+
 			return runSpawn(participant, bridgeType, workdir, tenant, displayName, timeout)
 		},
 	}
 
-	cmd.Flags().StringP("participant", "p", "", "agent-hub handle (without @) [required]")
+	cmd.Flags().StringP("participant", "p", "", "agent-hub handle (without @)")
 	cmd.Flags().StringP("user", "u", "", "")
 	_ = cmd.Flags().MarkHidden("user")
-	cmd.Flags().StringVarP(&workdir, "workdir", "w", "", "peer workdir with CLAUDE.md (default: cwd)")
-	cmd.Flags().StringVar(&tenant, "tenant", "", "tenant ID (overrides AGENT_HUB_TENANT env)")
+	cmd.Flags().StringVarP(&workdir, "workdir", "w", "", "peer workdir with CLAUDE.md (overrides saved config)")
+	cmd.Flags().StringVar(&tenant, "tenant", "", "tenant ID (overrides saved config and AGENT_HUB_TENANT env)")
 	cmd.Flags().StringVar(&bridgeType, "type", defaultBridgeType, "bridge type (bridge-claude2, bridge-codex2, bridge-gemini, …)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge for register (e.g. \"Researcher — issue investigation\")")

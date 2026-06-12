@@ -48,11 +48,13 @@ func main() {
 
 	bridgeCmd.AddCommand(
 		bridge.NewSpawnCmd(),
+		bridge.NewStartCmd(),
 		bridge.NewStopCmd(),
 		bridge.NewListCmd(),
 		bridge.NewStatusCmd(),
 		bridge.NewLogsCmd(),
 		bridge.NewPruneCmd(),
+		bridge.NewConfigCmd(),
 	)
 
 	root.AddCommand(bridgeCmd)
