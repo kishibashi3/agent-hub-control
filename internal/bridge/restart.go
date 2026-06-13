@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	restartStopTimeoutS  = 15
-	restartStopPollMs    = 200
+	restartStopTimeoutS = 15
+	restartStopPollMs   = 200
 )
 
 func NewRestartCmd() *cobra.Command {

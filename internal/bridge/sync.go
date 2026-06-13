@@ -34,11 +34,11 @@ func NewSyncCmd() *cobra.Command {
 
 // orphanEntry holds info parsed from a running process not in bridges.json.
 type orphanEntry struct {
-	pid         int
-	handle      string
-	workdir     string
-	tenant      string
-	bridgeType  string
+	pid        int
+	handle     string
+	workdir    string
+	tenant     string
+	bridgeType string
 }
 
 func runSync(dryRun bool) error {
