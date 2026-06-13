@@ -305,6 +305,12 @@ var _ = pidString
 // pgrepHandle は "--participant <handle>" を cmdline に持つプロセスを pgrep で検索する。
 // bridges.json に記録のない orphan プロセスの検出に使う (issue #14)。
 // 見つかった場合は最初の PID を返す。見つからない / pgrep 非対応の場合は 0 を返す。
+//
+// pgrep -f は cmdline 文字列に当該パターンを含む「任意の」プロセスにマッチするため、
+// agenthubctl 自身や "bash -c '... --participant <handle> ...'" のラッパーシェルにも
+// 誤マッチする (issue #31)。selfPID 除外だけでは親 bash ラッパーや別 invocation の
+// agenthubctl を除外できないので、候補ごとに実 argv を /proc から読み直し、
+// 本物の bridge ワーカーであることを looksLikeBridgeProcess で確認してから返す。
 func pgrepHandle(handle string) (int, error) {
 	pattern := "--participant " + handle
 	out, err := exec.Command("pgrep", "-f", "--", pattern).Output()
@@ -327,7 +333,65 @@ func pgrepHandle(handle string) (int, error) {
 			// agenthubctl 自身も --participant <handle> を含むのでスキップ
 			continue
 		}
+		// pgrep の substring マッチを実 argv で検証する。これにより
+		//   - 親 "bash -c '... --participant <handle> ...'" ラッパー (argv[0]=bash)
+		//   - 別 invocation の agenthubctl (argv[0]=agenthubctl, --participant は
+		//     spawn サブコマンドの引数であって bridge バイナリの引数ではない)
+		// を除外し、本物の orphan bridge だけを検出する (issue #31)。
+		if !looksLikeBridgeProcess(readCmdline(pid), handle) {
+			continue
+		}
 		return pid, nil
 	}
 	return 0, nil
+}
+
+// readCmdline は /proc/<pid>/cmdline を読んでプロセスの argv を返す。
+// cmdline は NUL 区切り。読めない (プロセス消滅 / procfs 非対応) 場合は nil を返す。
+func readCmdline(pid int) []string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return nil
+	}
+	parts := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+	if len(parts) == 1 && parts[0] == "" {
+		return nil
+	}
+	return parts
+}
+
+// looksLikeBridgeProcess は argv (あるプロセスの実コマンドライン) が、指定 handle の
+// 本物の bridge ワーカー起動であるかを判定する。spawn は常に
+//
+//	exec.Command(<.../bridge-XXX>, "--participant", <handle>, "--workdir", ...)
+//
+// の形で bridge を起動するため、本物の bridge は
+//   - argv[0] の basename が "bridge-" で始まる
+//   - "--participant <handle>" (または旧 "--user <handle>") を「独立した argv 要素」として持つ
+//
+// という 2 条件を満たす。一方、誤マッチ源は両方を満たさない (issue #31):
+//   - "bash -c 'agenthubctl ... --participant <handle> ...'": --participant は -c の
+//     文字列の中にあり独立 argv ではない。argv[0]=bash。
+//   - "agenthubctl bridge spawn --participant <handle> ...": 独立 argv だが argv[0]=agenthubctl
+//     で "bridge-" prefix を持たない。
+//
+// 旧フラグ --user / 短縮形 -p,-u も受理する (後方互換、旧バイナリ起動の orphan 検出用)。
+func looksLikeBridgeProcess(argv []string, handle string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	if !strings.HasPrefix(filepath.Base(argv[0]), "bridge-") {
+		return false
+	}
+	for i, a := range argv {
+		switch a {
+		case "--participant", "-p", "--user", "-u":
+			if i+1 < len(argv) && argv[i+1] == handle {
+				return true
+			}
+		case "--participant=" + handle, "-p=" + handle, "--user=" + handle, "-u=" + handle:
+			return true
+		}
+	}
+	return false
 }
