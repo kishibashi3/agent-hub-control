@@ -1,10 +1,11 @@
 // watchdog.go — detect dead bridges and respawn them (issue #13, #12)
 //
 // 使い方:
-//   one-shot (cron 向け):
-//     agenthubctl watchdog
-//   daemon (長期常駐):
-//     agenthubctl watchdog --interval 30s [--notify-to @operator]
+//
+//	one-shot (cron 向け):
+//	  agenthubctl watchdog
+//	daemon (長期常駐):
+//	  agenthubctl watchdog --interval 30s [--notify-to @operator]
 //
 // one-shot はデーモンプロセス管理不要で cron に適す。
 // daemon はシグナル (SIGINT/SIGTERM) で停止する。
