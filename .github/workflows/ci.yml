@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同じ branch への新しい push が来たら古い run を cancel する
+# (= agent-hub-bridges / agent-hub-sdk と同じ運用)。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: gofmt + build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # gofmt gate: 崩れた .go があれば非空出力 → exit 1 で CI を落とす。
+      # PR #34 の pre-existing fmt 崩れ再発防止 (issue #36)。
+      - name: gofmt check
+        run: |
+          unformatted=$(gofmt -l internal/ cmd/)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on the following files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./...
