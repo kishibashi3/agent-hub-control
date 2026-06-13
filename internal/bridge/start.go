@@ -17,21 +17,24 @@ func NewStartCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "start [<handle>]",
-		Short: "Start a bridge using saved config (use --all to start all configured bridges)",
+		Use:   "start <handle> | --all",
+		Short: "Start bridge worker(s) from config, skip already-running ones",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if all {
+				if len(args) > 0 {
+					return fmt.Errorf("--all and <handle> are mutually exclusive")
+				}
 				return runStartAll(timeout)
 			}
 			if len(args) == 0 {
-				return fmt.Errorf("specify a handle or use --all")
+				return fmt.Errorf("either <handle> or --all is required")
 			}
 			return runStartOne(args[0], timeout)
 		},
 	}
 
-	cmd.Flags().BoolVar(&all, "all", false, "start all configured bridges (skip already running)")
+	cmd.Flags().BoolVar(&all, "all", false, "Start all configured bridge workers (skip already-running)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for each bridge ready signal")
 	return cmd
 }
@@ -67,6 +70,7 @@ func runStartAll(timeout int) error {
 	}
 
 	var started, skipped int
+	var failed []string
 	for _, cfg := range cfgs {
 		entry := st.Get(cfg.Handle)
 		if entry != nil && entry.IsRunning() {
@@ -85,14 +89,18 @@ func runStartAll(timeout int) error {
 		if bridgeType == "" {
 			bridgeType = defaultBridgeType
 		}
-		fmt.Fprintf(os.Stderr, "starting @%s...\n", cfg.Handle)
+		fmt.Fprintf(os.Stderr, "starting @%s (type=%s, workdir=%s)...\n", cfg.Handle, bridgeType, cfg.Workdir)
 		if err := runSpawn(cfg.Handle, bridgeType, cfg.Workdir, cfg.Tenant, cfg.DisplayName, timeout); err != nil {
 			fmt.Fprintf(os.Stderr, "error: @%s: %v\n", cfg.Handle, err)
+			failed = append(failed, cfg.Handle)
 			continue
 		}
 		started++
 	}
 
+	if len(failed) > 0 {
+		return fmt.Errorf("start failed for: %v", failed)
+	}
 	fmt.Printf("done: %d started, %d skipped\n", started, skipped)
 	return nil
 }

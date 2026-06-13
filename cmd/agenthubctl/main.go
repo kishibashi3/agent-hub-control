@@ -4,7 +4,8 @@
 //
 //	agenthubctl bridge spawn --participant <handle> --workdir <path> [--type <bridge-type>]
 //	agenthubctl bridge stop <handle>
-//	agenthubctl bridge restart <handle>
+//	agenthubctl bridge restart <handle> | --all
+//	agenthubctl bridge start <handle> | --all
 //	agenthubctl bridge list
 //	agenthubctl bridge status [handle]
 //	agenthubctl bridge sync [--dry-run]

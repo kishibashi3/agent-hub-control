@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -32,12 +33,19 @@ func NewRestartCmd() *cobra.Command {
 				if len(args) > 0 {
 					return fmt.Errorf("--all and <handle> are mutually exclusive")
 				}
-				return runRestartAll(displayName, timeout)
+				return runRestartAll(timeout)
 			}
 			if len(args) == 0 {
 				return fmt.Errorf("either <handle> or --all is required")
 			}
-			return runRestart(args[0], displayName, timeout)
+			handle := args[0]
+			// Fall back to bridge config for display-name when not provided via flag.
+			if !cmd.Flags().Changed("display-name") {
+				if cfg, err := bridgecfg.Load(handle); err == nil && cfg != nil && cfg.DisplayName != "" {
+					displayName = cfg.DisplayName
+				}
+			}
+			return runRestart(handle, displayName, timeout)
 		},
 	}
 
@@ -114,7 +122,7 @@ func runRestart(handle, displayName string, spawnTimeoutS int) error {
 	return runSpawn(handle, savedBridgeType, savedWorkdir, savedTenant, displayName, spawnTimeoutS)
 }
 
-func runRestartAll(displayName string, spawnTimeoutS int) error {
+func runRestartAll(spawnTimeoutS int) error {
 	st, err := state.Load()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
@@ -131,8 +139,12 @@ func runRestartAll(displayName string, spawnTimeoutS int) error {
 
 	var failed []string
 	for _, h := range handles {
+		dn := ""
+		if cfg, loadErr := bridgecfg.Load(h); loadErr == nil && cfg != nil {
+			dn = cfg.DisplayName
+		}
 		fmt.Fprintf(os.Stderr, "=== restarting @%s ===\n", h)
-		if err := runRestart(h, displayName, spawnTimeoutS); err != nil {
+		if err := runRestart(h, dn, spawnTimeoutS); err != nil {
 			fmt.Fprintf(os.Stderr, "error: @%s: %v\n", h, err)
 			failed = append(failed, h)
 		}

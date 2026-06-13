@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"bufio"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,8 +51,88 @@ func startFakeProc(t *testing.T, argv0base, flag, handle string) *exec.Cmd {
 	return cmd
 }
 
+// TestSpawnBridgeArgs は runSpawn が bridge-claude2 を起動するとき --participant フラグ（--user ではなく）を
+// 渡していることを確認するリグレッションテスト。
+// fake-bridge-args.sh を使うことで実際のバイナリなしに検証する。
+func TestSpawnBridgeArgs(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("test is Linux-specific")
+	}
+
+	_, thisFile, _, _ := runtime.Caller(0)
+	scriptPath := filepath.Join(filepath.Dir(thisFile), "testdata", "fake-bridge-args.sh")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("testdata/fake-bridge-args.sh not found: %v", err)
+	}
+
+	t.Setenv("AGENT_HUB_BRIDGE_CLAUDE2_BIN", scriptPath)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	workdir := t.TempDir()
+	const handle = "__test_spawn_args__"
+	logPath := fmt.Sprintf("/tmp/bridge-%s.log", handle)
+
+	// 前回テストのゴミプロセスをクリーンアップしてから開始
+	pkillHandle(handle)
+	os.Remove(logPath)
+
+	t.Cleanup(func() {
+		pkillHandle(handle)
+		os.Remove(logPath)
+	})
+
+	// run spawn in background and wait briefly; it succeeds when "registered and listening" is found
+	done := make(chan error, 1)
+	go func() {
+		done <- runSpawn(handle, "bridge-claude2", workdir, "", "", 10)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runSpawn failed: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("runSpawn timed out")
+	}
+
+	// ログファイルに --participant が含まれ、--user が含まれないことを確認
+	f, err := os.Open(logPath)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	defer f.Close()
+
+	var foundParticipant, foundUser bool
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "--participant") {
+			foundParticipant = true
+		}
+		if strings.Contains(line, "--user") {
+			foundUser = true
+		}
+	}
+	if !foundParticipant {
+		t.Error("bridge was not called with --participant flag")
+	}
+	if foundUser {
+		t.Error("bridge was called with --user flag (deprecated; should use --participant)")
+	}
+}
+
+// pkillHandle はテスト後のクリーンアップ用。--participant または --user で起動した fake プロセスを終了する。
+func pkillHandle(handle string) {
+	for _, flag := range []string{"--participant", "--user"} {
+		exec.Command("pkill", "-f", flag+" "+handle).Run() //nolint:errcheck
+	}
+}
+
 // TestPgrepHandleFindsProcess は本物の bridge プロセス (argv[0] basename が "bridge-" で始まり、
-// --participant <handle> を独立 argv に持つ) を pgrepHandle が検出できることを確認する。
+// --participant <handle> または旧 --user <handle> を独立 argv に持つ) を pgrepHandle が
+// 検出できることを確認する。--user は v0.3.0 以前の旧フラグ名で、旧バイナリで起動した orphan も
+// 後方互換として検出できなければならない。両フラグを startFakeProc で起動して検証する。
 func TestPgrepHandleFindsProcess(t *testing.T) {
 	if _, err := exec.LookPath("pgrep"); err != nil {
 		t.Skip("pgrep not available")
@@ -59,41 +141,46 @@ func TestPgrepHandleFindsProcess(t *testing.T) {
 		t.Skip("pgrep -f / procfs behavior is Linux-specific in this test")
 	}
 
-	const handle = "__test_bridge_handle_pgrep__"
+	for _, flag := range []string{"--participant", "--user"} {
+		flag := flag
+		t.Run(flag, func(t *testing.T) {
+			handle := "__test_bridge_handle_pgrep_" + strings.TrimPrefix(flag, "--") + "__"
 
-	fake := startFakeProc(t, "bridge-fake", "--participant", handle)
-	defer func() {
-		_ = fake.Process.Kill()
-		_ = fake.Wait()
-	}()
+			fake := startFakeProc(t, "bridge-fake", flag, handle)
+			defer func() {
+				_ = fake.Process.Kill()
+				_ = fake.Wait()
+			}()
 
-	fakePID := fake.Process.Pid
+			fakePID := fake.Process.Pid
 
-	// プロセスが cmdline を確定するまで少し待つ
-	time.Sleep(100 * time.Millisecond)
+			// プロセスが cmdline を確定するまで少し待つ
+			time.Sleep(100 * time.Millisecond)
 
-	pid, err := pgrepHandle(handle)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pid == 0 {
-		t.Errorf("expected pgrepHandle to find pid=%d, got 0", fakePID)
-		return
-	}
-	// 返ってきた PID が fake のもの、または pgrep 結果に fake PID が含まれることを確認
-	if pid != fakePID {
-		out, _ := exec.Command("pgrep", "-f", "--", "--participant "+handle).Output()
-		pids := strings.Fields(strings.TrimSpace(string(out)))
-		found := false
-		for _, p := range pids {
-			if v, _ := strconv.Atoi(p); v == fakePID {
-				found = true
-				break
+			pid, err := pgrepHandle(handle)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
-		}
-		if !found {
-			t.Errorf("fake pid=%d not found in pgrep output: %v", fakePID, pids)
-		}
+			if pid == 0 {
+				t.Errorf("pgrepHandle should find pid=%d for %s, got 0", fakePID, flag)
+				return
+			}
+			// 返ってきた PID が fake のもの、または pgrep 結果に fake PID が含まれることを確認
+			if pid != fakePID {
+				out, _ := exec.Command("pgrep", "-f", "--", flag+" "+handle).Output()
+				pids := strings.Fields(strings.TrimSpace(string(out)))
+				found := false
+				for _, p := range pids {
+					if v, _ := strconv.Atoi(p); v == fakePID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("fake pid=%d not found in pgrep output for %s: %v", fakePID, flag, pids)
+				}
+			}
+		})
 	}
 }
 
