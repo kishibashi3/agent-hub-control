@@ -14,7 +14,7 @@ import (
 func NewStopCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop <handle>",
-		Short: "Stop a running bridge-claude2 worker",
+		Short: "Stop a running bridge worker (finds the real process even if state is stale)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStop(args[0])
@@ -31,23 +31,59 @@ func runStop(user string) error {
 	defer unlock()
 
 	entry := st.Get(user)
-	if entry == nil {
-		return fmt.Errorf("@%s not found in state. Use `bridge list` to see running bridges.", user)
+
+	// 実プロセスを正本にする (issue #38)。state が stale でも / そもそも無くても、
+	// 実際に動いている bridge プロセスを発見して止める (reconcile してから stop)。
+	livePID := 0
+	switch {
+	case entry != nil && entry.IsRunning():
+		livePID = entry.PID
+	default:
+		// state に無い、または state の PID が既に死んでいる場合は実プロセスを探す。
+		pid, perr := pgrepHandle(user)
+		if perr != nil {
+			return fmt.Errorf("search running process for @%s: %w", user, perr)
+		}
+		livePID = pid
+		if pid != 0 && entry == nil {
+			fmt.Fprintf(os.Stderr, "note: @%s is not in state but found running (pid=%d) — stopping untracked process.\n", user, pid)
+		} else if pid != 0 && entry != nil {
+			fmt.Fprintf(os.Stderr, "note: state for @%s was stale (recorded pid=%d dead); stopping live process (pid=%d).\n", user, entry.PID, pid)
+		}
 	}
 
-	if !entry.IsRunning() {
-		fmt.Fprintf(os.Stderr, "warning: @%s (pid=%d) is not running. Cleaning up state.\n", user, entry.PID)
-		st.Delete(user)
-		return st.Save()
+	if livePID == 0 {
+		if entry != nil {
+			fmt.Fprintf(os.Stderr, "warning: @%s (pid=%d) is not running. Cleaning up stale state.\n", user, entry.PID)
+			st.Delete(user)
+			return st.Save()
+		}
+		return fmt.Errorf("@%s not found in state or running processes. Use `bridge list` to see what is running.", user)
 	}
 
-	proc, err := os.FindProcess(entry.PID)
+	if err := stopPID(livePID); err != nil {
+		return err
+	}
+
+	fmt.Printf("stopped @%s (pid=%d)\n", user, livePID)
+
+	st.Delete(user)
+	if err := st.Save(); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	return nil
+}
+
+// stopPID は pid に SIGTERM を送り、最大 5 秒待ってから（まだ生きていれば）SIGKILL する。
+func stopPID(pid int) error {
+	proc, err := os.FindProcess(pid)
 	if err != nil {
-		return fmt.Errorf("find process pid=%d: %w", entry.PID, err)
+		return fmt.Errorf("find process pid=%d: %w", pid, err)
 	}
 
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		return fmt.Errorf("SIGTERM pid=%d: %w", entry.PID, err)
+		return fmt.Errorf("SIGTERM pid=%d: %w", pid, err)
 	}
 
 	// プロセスが実際に死ぬのを最大 5 秒待つ
@@ -60,15 +96,8 @@ func runStop(user string) error {
 	}
 	// まだ生きていれば SIGKILL
 	if proc.Signal(syscall.Signal(0)) == nil {
-		fmt.Fprintf(os.Stderr, "warning: pid=%d did not exit after SIGTERM, sending SIGKILL\n", entry.PID)
+		fmt.Fprintf(os.Stderr, "warning: pid=%d did not exit after SIGTERM, sending SIGKILL\n", pid)
 		_ = proc.Kill()
-	}
-
-	fmt.Printf("stopped @%s (pid=%d)\n", user, entry.PID)
-
-	st.Delete(user)
-	if err := st.Save(); err != nil {
-		return fmt.Errorf("save state: %w", err)
 	}
 
 	return nil

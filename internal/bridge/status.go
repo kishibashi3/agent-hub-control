@@ -41,16 +41,8 @@ func runStatusAll() error {
 		if e.IsRunning() {
 			label = "LIVE"
 		}
-		tenant := e.Tenant
-		if tenant == "" {
-			tenant = "(default)"
-		}
-		bridgeType := e.BridgeType
-		if bridgeType == "" {
-			bridgeType = "bridge-claude2"
-		}
 		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\n",
-			e.Handle, label, e.PID, bridgeType, tenant, e.StartedAt)
+			e.Handle, label, e.PID, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), e.StartedAt)
 	}
 	return w.Flush()
 }
@@ -71,21 +63,11 @@ func runStatus(user string) error {
 		status = "running"
 	}
 
-	tenant := entry.Tenant
-	if tenant == "" {
-		tenant = "(default)"
-	}
-
-	bridgeType := entry.BridgeType
-	if bridgeType == "" {
-		bridgeType = "bridge-claude2"
-	}
-
 	fmt.Printf("handle:   @%s\n", entry.Handle)
 	fmt.Printf("status:   %s\n", status)
 	fmt.Printf("pid:      %d\n", entry.PID)
-	fmt.Printf("type:     %s\n", bridgeType)
-	fmt.Printf("tenant:   %s\n", tenant)
+	fmt.Printf("type:     %s\n", bridgeTypeOrDefault(entry.BridgeType))
+	fmt.Printf("tenant:   %s\n", tenantOrDefault(entry.Tenant))
 	fmt.Printf("workdir:  %s\n", entry.Workdir)
 	fmt.Printf("log:      %s\n", entry.LogPath)
 	fmt.Printf("started:  %s\n", entry.StartedAt)
