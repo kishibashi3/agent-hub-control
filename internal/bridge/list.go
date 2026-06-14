@@ -44,12 +44,21 @@ func runList() error {
 	deadCount := 0
 	for _, e := range st.Bridges {
 		status := "running"
+		pid := e.PID
 		if !e.IsRunning() {
-			status = "dead"
-			deadCount++
+			// 記録された PID は死んでいる。同一 handle が新しい PID で再起動していないか
+			// 実プロセスを正本にして確認する (issue #38)。stop と同じ reconcile を list にも
+			// 適用し、再起動済みなら live PID で running 表示する。これがないと stale entry の
+			// ある handle は実稼働中でも dead 表示になり、list と stop の挙動が非対称になる。
+			if livePID, perr := pgrepHandle(e.Handle); perr == nil && livePID != 0 {
+				pid = livePID
+			} else {
+				status = "dead"
+				deadCount++
+			}
 		}
 		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
-			e.Handle, status, e.PID, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), e.Workdir, e.StartedAt)
+			e.Handle, status, pid, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), e.Workdir, e.StartedAt)
 	}
 
 	// state に無い稼働中プロセスを untracked として併記する。

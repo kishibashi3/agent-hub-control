@@ -39,7 +39,7 @@ agenthubctl version       # または agenthubctl --version
 
 ```
 agenthubctl dev
-  commit: 5a98214298 84+dirty
+  commit: 5a9821429884+dirty
   built:  2026-06-11T15:19:59Z
   go:     go1.22.4
 ```
