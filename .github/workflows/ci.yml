@@ -12,6 +12,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# 既定の GITHUB_TOKEN 権限を最小化 (read-only)。CI は checkout/build/test のみ。
+permissions:
+  contents: read
+
 jobs:
   go:
     name: gofmt + build + test
@@ -27,9 +31,10 @@ jobs:
 
       # gofmt gate: 崩れた .go があれば非空出力 → exit 1 で CI を落とす。
       # PR #34 の pre-existing fmt 崩れ再発防止 (issue #36)。
+      # 対象は tracked な全 .go ファイル → go build/test の ./... と再帰スコープ一致。
       - name: gofmt check
         run: |
-          unformatted=$(gofmt -l internal/ cmd/)
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt needed on the following files:"
             echo "$unformatted"
