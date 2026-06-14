@@ -11,6 +11,9 @@
 //	agenthubctl bridge sync [--dry-run]
 //	agenthubctl bridge logs [--follow|-f] <handle>
 //	agenthubctl bridge prune [--dry-run]
+//	agenthubctl fleet install [--system|--user] [--dry-run]
+//	agenthubctl fleet uninstall
+//	agenthubctl fleet status
 //	agenthubctl send <@handle> <message>
 //	agenthubctl inbox [--mark-read]
 //	agenthubctl participants [--online-only]
@@ -33,6 +36,7 @@ import (
 	"strings"
 
 	"github.com/kishibashi3/agent-hub-control/internal/bridge"
+	"github.com/kishibashi3/agent-hub-control/internal/fleet"
 	"github.com/kishibashi3/agent-hub-control/internal/hub"
 	"github.com/spf13/cobra"
 )
@@ -123,6 +127,7 @@ func main() {
 	)
 
 	root.AddCommand(bridgeCmd)
+	root.AddCommand(fleet.NewFleetCmd())
 	root.AddCommand(hub.NewSendCmd())
 	root.AddCommand(hub.NewInboxCmd())
 	root.AddCommand(hub.NewParticipantsCmd())
