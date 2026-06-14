@@ -28,13 +28,71 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"runtime/debug"
+	"strings"
 
 	"github.com/kishibashi3/agent-hub-control/internal/bridge"
 	"github.com/kishibashi3/agent-hub-control/internal/hub"
 	"github.com/spf13/cobra"
 )
 
+// version is overridable via -ldflags "-X main.version=...". commit / build date は
+// go の VCS stamping (debug.ReadBuildInfo) から取得するので Makefile への追加は不要。
 var version = "dev"
+
+// buildInfo は go build / go install が埋め込む VCS スタンプを返す。
+func buildInfo() (commit, date string, modified bool) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			commit = s.Value
+		case "vcs.time":
+			date = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
+		}
+	}
+	return
+}
+
+// versionString は version / commit / build date / go version を含む複数行の
+// バージョン文字列を返す。古い binary を即座に見分けられるようにするのが目的 (issue #38)。
+func versionString() string {
+	commit, date, modified := buildInfo()
+	if commit == "" {
+		commit = "unknown"
+	} else if len(commit) > 12 {
+		commit = commit[:12]
+	}
+	if modified {
+		commit += "+dirty"
+	}
+	if date == "" {
+		date = "unknown"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "agenthubctl %s\n", version)
+	fmt.Fprintf(&b, "  commit: %s\n", commit)
+	fmt.Fprintf(&b, "  built:  %s\n", date)
+	fmt.Fprintf(&b, "  go:     %s\n", runtime.Version())
+	return b.String()
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version, build commit, and build date",
+		Args:  cobra.NoArgs,
+		Run: func(_ *cobra.Command, _ []string) {
+			fmt.Print(versionString())
+		},
+	}
+}
 
 func main() {
 	root := &cobra.Command{
@@ -43,6 +101,8 @@ func main() {
 		SilenceUsage: true,
 		Version:      version,
 	}
+	// `--version` も `version` サブコマンドと同じ詳細表示にする。
+	root.SetVersionTemplate(versionString())
 
 	bridgeCmd := &cobra.Command{
 		Use:   "bridge",
@@ -66,6 +126,7 @@ func main() {
 	root.AddCommand(hub.NewSendCmd())
 	root.AddCommand(hub.NewInboxCmd())
 	root.AddCommand(hub.NewParticipantsCmd())
+	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
