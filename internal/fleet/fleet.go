@@ -46,6 +46,7 @@ func newInstallCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&opt.ForceSystem, "system", false, "force system-level install (/etc/systemd/system; needs root)")
 	cmd.Flags().BoolVar(&opt.ForceUser, "user", false, "force user-level install (~/.config/systemd/user)")
+	cmd.Flags().BoolVar(&opt.Force, "force", false, "if a different-scope install already exists, uninstall it first instead of aborting")
 	cmd.Flags().StringVar(&opt.Binary, "binary", "", "agenthubctl path baked into the unit (default: this executable)")
 	cmd.Flags().StringVar(&opt.EnvFile, "env-file", "", "EnvironmentFile path (default: ~/.agent-hub/fleet.env)")
 	cmd.Flags().IntVar(&opt.Timeout, "timeout", 0, "per-bridge start timeout in seconds (default 40)")
