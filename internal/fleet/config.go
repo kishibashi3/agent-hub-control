@@ -179,8 +179,9 @@ func (c *Config) resolveUser() error {
 		}
 		c.User = u.Username
 		c.Home = u.HomeDir
-		c.UID, _ = strconv.Atoi(u.Uid)
-		c.GID, _ = strconv.Atoi(u.Gid)
+		if c.UID, c.GID, err = parseIDs(u); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -189,14 +190,28 @@ func (c *Config) resolveUser() error {
 		return fmt.Errorf("current user: %w", err)
 	}
 	c.User = u.Username
-	c.UID, _ = strconv.Atoi(u.Uid)
-	c.GID, _ = strconv.Atoi(u.Gid)
+	if c.UID, c.GID, err = parseIDs(u); err != nil {
+		return err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("home dir: %w", err)
 	}
 	c.Home = home
 	return nil
+}
+
+// parseIDs converts a user's textual UID/GID to ints. We fail fast rather than swallow
+// the error: a silent fallback to 0 would chown the 0600 secret env file to root:root
+// (see systemd.go), exactly the kind of invisible privilege change install must never do.
+func parseIDs(u *user.User) (uid, gid int, err error) {
+	if uid, err = strconv.Atoi(u.Uid); err != nil {
+		return 0, 0, fmt.Errorf("parse uid %q for user %q: %w", u.Uid, u.Username, err)
+	}
+	if gid, err = strconv.Atoi(u.Gid); err != nil {
+		return 0, 0, fmt.Errorf("parse gid %q for user %q: %w", u.Gid, u.Username, err)
+	}
+	return uid, gid, nil
 }
 
 // systemdAvailable reports whether systemd is the running init (sd_booted equivalent).
