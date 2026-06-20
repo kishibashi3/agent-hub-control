@@ -3,9 +3,94 @@ package fleet
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 )
+
+// fakeEuid overrides the package-level geteuid so cross-user (root) teardown branches can be
+// exercised host-independently. Returns a restore func for defer.
+func fakeEuid(t *testing.T, uid int) func() {
+	t.Helper()
+	prev := geteuid
+	geteuid = func() int { return uid }
+	return func() { geteuid = prev }
+}
+
+// TestSystemctlInvocationCrossUserWrapsSudo: a root-driven user-scope teardown of another
+// user's units must reach that user's session bus (issue #44), not root's empty --user bus.
+func TestSystemctlInvocationCrossUserWrapsSudo(t *testing.T) {
+	defer fakeEuid(t, 0)()
+	c := &Config{Scope: ScopeUser, User: "alice", UID: 1001}
+	name, argv := c.systemctlInvocation("disable", "--now", serviceName+".timer")
+	if name != "sudo" {
+		t.Fatalf("exec name = %q, want sudo", name)
+	}
+	want := []string{
+		"-u", "alice", "env",
+		"XDG_RUNTIME_DIR=/run/user/1001",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus",
+		"systemctl", "--user", "disable", "--now", serviceName + ".timer",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Errorf("cross-user argv =\n  %v\nwant\n  %v", argv, want)
+	}
+}
+
+// TestSystemctlInvocationSameUserPlain: a user tearing down their own units uses plain
+// `systemctl --user` (their own bus is correct).
+func TestSystemctlInvocationSameUserPlain(t *testing.T) {
+	defer fakeEuid(t, 1000)()
+	c := &Config{Scope: ScopeUser, User: "alice", UID: 1000}
+	name, argv := c.systemctlInvocation("daemon-reload")
+	if name != "systemctl" || !reflect.DeepEqual(argv, []string{"--user", "daemon-reload"}) {
+		t.Errorf("same-user invocation = %q %v, want systemctl [--user daemon-reload]", name, argv)
+	}
+}
+
+// TestSystemctlInvocationSystemScopePlain: system scope (even as root) uses plain systemctl,
+// no --user, no sudo wrapping — the system bus is correct.
+func TestSystemctlInvocationSystemScopePlain(t *testing.T) {
+	defer fakeEuid(t, 0)()
+	c := &Config{Scope: ScopeSystem, UID: 0}
+	name, argv := c.systemctlInvocation("daemon-reload")
+	if name != "systemctl" || !reflect.DeepEqual(argv, []string{"daemon-reload"}) {
+		t.Errorf("system-scope invocation = %q %v, want systemctl [daemon-reload]", name, argv)
+	}
+}
+
+// TestSystemdUnitDirForCrossUserIgnoresProcessXDG: under sudo, the process's own
+// XDG_CONFIG_HOME (root's) must not be applied to the target user's unit dir (issue #44 #1).
+func TestSystemdUnitDirForCrossUserIgnoresProcessXDG(t *testing.T) {
+	defer fakeEuid(t, 0)()
+	t.Setenv("XDG_CONFIG_HOME", "/root/.config") // root's — must be ignored for the target
+	c := &Config{Scope: ScopeSystem, Home: "/home/alice", UID: 1001}
+	got := c.systemdUnitDirFor(ScopeUser)
+	want := filepath.Join("/home/alice", ".config", "systemd", "user")
+	if got != want {
+		t.Errorf("cross-user user unit dir = %q, want %q (process XDG must be ignored)", got, want)
+	}
+}
+
+// TestStopSystemdUnitsWarnsWhenInvokingUserUnknown: root tearing down a user-scope install
+// without a known SUDO_USER can't reach the real user's bus — must warn, not silently skip.
+func TestStopSystemdUnitsWarnsWhenInvokingUserUnknown(t *testing.T) {
+	defer fakeEuid(t, 0)()
+	c := &Config{Scope: ScopeUser, UID: 0}
+	if warn := c.stopSystemdUnits(); warn == "" {
+		t.Error("expected warning when invoking user is unknown, got none")
+	}
+}
+
+// TestStopSystemdUnitsWarnsWhenNoUserSession: cross-user teardown with no /run/user/<uid>
+// means no live user manager — files are removed but the operator is told it self-heals.
+func TestStopSystemdUnitsWarnsWhenNoUserSession(t *testing.T) {
+	defer fakeEuid(t, 0)()
+	c := &Config{Scope: ScopeUser, User: "ghost", UID: 2147480000} // no such runtime dir
+	if warn := c.stopSystemdUnits(); warn == "" {
+		t.Error("expected warning when target user has no active session, got none")
+	}
+}
 
 // TestWriteEnvScaffoldDoesNotClobber verifies an existing env file (which may hold
 // secrets) is never overwritten by a repeat install.
