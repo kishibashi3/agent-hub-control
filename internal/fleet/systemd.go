@@ -250,7 +250,13 @@ func (c *Config) stopSystemdUnits() string {
 				"bus (%v) — removed unit files; run `systemctl --user disable --now %s.timer` as %s "+
 				"if it persists", serviceName, c.User, err, serviceName, c.User)
 		}
-		_ = c.runSystemctlQuiet("stop", serviceName+".service")
+		if err := c.runSystemctlQuiet("stop", serviceName+".service"); err != nil {
+			// Timer is already disabled (no re-trigger), but surface the service-stop failure
+			// rather than silent-skip it — an in-flight run may still be active (issue #44).
+			return fmt.Sprintf("stopped the user-scope %s.timer for %s but could not stop a running "+
+				"%s.service (%v) — removed unit files; run `systemctl --user stop %s.service` as %s "+
+				"if it persists", serviceName, c.User, serviceName, err, serviceName, c.User)
+		}
 		return ""
 	}
 
@@ -363,11 +369,14 @@ func (c *Config) systemctlCmd(args ...string) *exec.Cmd {
 }
 
 func (c *Config) runSystemctl(args ...string) error {
-	cmd := c.systemctlCmd(args...)
+	name, argv := c.systemctlInvocation(args...)
+	cmd := exec.Command(name, argv...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("systemctl %s: %w", strings.Join(c.systemctlArgs(args...), " "), err)
+		// Report the actual invocation (incl. the sudo … --user wrapper for cross-user
+		// teardown) so the error doubles as a reproduce command (issue #44).
+		return fmt.Errorf("%s %s: %w", name, strings.Join(argv, " "), err)
 	}
 	return nil
 }
