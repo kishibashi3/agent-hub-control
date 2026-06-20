@@ -118,6 +118,80 @@ func TestResolveRelativeBinaryRejected(t *testing.T) {
 	}
 }
 
+func TestOtherScope(t *testing.T) {
+	if got := (&Config{Scope: ScopeSystem}).otherScope(); got != ScopeUser {
+		t.Errorf("otherScope(system) = %q, want user", got)
+	}
+	if got := (&Config{Scope: ScopeUser}).otherScope(); got != ScopeSystem {
+		t.Errorf("otherScope(user) = %q, want system", got)
+	}
+}
+
+// seedUserScopeTimer writes a fake user-scope timer (+service) into home and returns the
+// .timer path. Used to simulate an orphaned prior --user install.
+func seedUserScopeTimer(t *testing.T, home string) string {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	dir := filepath.Join(home, ".config", "systemd", "user")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmr := filepath.Join(dir, serviceName+".timer")
+	for _, name := range []string{serviceName + ".service", serviceName + ".timer"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("[Unit]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return tmr
+}
+
+// TestCrossScopeGuardNoOrphanPasses: with no opposite-scope units, the guard is a no-op.
+// Target system scope so the probed opposite scope is the per-home user dir (an empty
+// tempdir) rather than the host's real /etc/systemd/system, keeping the test hermetic.
+func TestCrossScopeGuardNoOrphanPasses(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	c := &Config{Scope: ScopeSystem, Home: home}
+	if err := c.crossScopeGuard(); err != nil {
+		t.Errorf("guard with no orphan returned error: %v", err)
+	}
+}
+
+// TestCrossScopeGuardAbortsWithoutForce: a user-scope orphan blocks a system-scope install
+// when --force is absent, and the orphan files are left untouched.
+func TestCrossScopeGuardAbortsWithoutForce(t *testing.T) {
+	home := t.TempDir()
+	tmr := seedUserScopeTimer(t, home)
+
+	c := &Config{Scope: ScopeSystem, Home: home, Force: false}
+	err := c.crossScopeGuard()
+	if err == nil {
+		t.Fatal("expected abort error for cross-scope orphan, got nil")
+	}
+	if _, statErr := os.Stat(tmr); statErr != nil {
+		t.Errorf("abort path removed the orphan timer (should be untouched): %v", statErr)
+	}
+}
+
+// TestCrossScopeGuardForceRemovesOtherScope: with --force, the user-scope orphan is removed
+// before the system-scope install proceeds. (systemctl calls are best-effort/quiet, so this
+// runs even where systemd is absent.)
+func TestCrossScopeGuardForceRemovesOtherScope(t *testing.T) {
+	home := t.TempDir()
+	tmr := seedUserScopeTimer(t, home)
+
+	c := &Config{
+		Scope: ScopeSystem, Home: home, Force: true,
+		EnvFile: filepath.Join(home, ".agent-hub", "fleet.env"),
+	}
+	if err := c.crossScopeGuard(); err != nil {
+		t.Fatalf("--force guard returned error: %v", err)
+	}
+	if _, statErr := os.Stat(tmr); !os.IsNotExist(statErr) {
+		t.Errorf("--force did not remove the orphan timer %s (err=%v)", tmr, statErr)
+	}
+}
+
 // TestResolveBakesAbsoluteBinaryAndDefaults checks the happy path on a systemd host.
 func TestResolveBakesAbsoluteBinaryAndDefaults(t *testing.T) {
 	if runtime.GOOS != "linux" || !systemdAvailable() {

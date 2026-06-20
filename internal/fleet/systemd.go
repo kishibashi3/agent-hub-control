@@ -10,8 +10,13 @@ import (
 )
 
 // systemdUnitDir is where the .service / .timer files are written for this scope.
-func (c *Config) systemdUnitDir() string {
-	if c.Scope == ScopeSystem {
+func (c *Config) systemdUnitDir() string { return c.systemdUnitDirFor(c.Scope) }
+
+// systemdUnitDirFor returns the unit dir for an arbitrary scope. It is parameterized (vs
+// reading c.Scope) so install can probe the *opposite* scope for an orphaned prior install
+// — the scope-change orphan case from issue #42.
+func (c *Config) systemdUnitDirFor(scope Scope) string {
+	if scope == ScopeSystem {
 		return "/etc/systemd/system"
 	}
 	base := os.Getenv("XDG_CONFIG_HOME")
@@ -19,6 +24,72 @@ func (c *Config) systemdUnitDir() string {
 		base = filepath.Join(c.Home, ".config")
 	}
 	return filepath.Join(base, "systemd", "user")
+}
+
+// otherScope is the scope opposite to c.Scope.
+func (c *Config) otherScope() Scope {
+	if c.Scope == ScopeSystem {
+		return ScopeUser
+	}
+	return ScopeSystem
+}
+
+// withScope returns a shallow copy of c with a different scope, so the existing
+// scope-aware uninstall logic can be reused to tear down the opposite scope.
+func (c *Config) withScope(s Scope) *Config {
+	cp := *c
+	cp.Scope = s
+	return &cp
+}
+
+// otherScopeSystemdUnits returns the service/timer file paths that exist in the opposite
+// scope's unit dir (empty if none). A non-empty result is the orphan risk: re-installing
+// here without removing them leaves two watchdog timers running.
+func (c *Config) otherScopeSystemdUnits() []string {
+	dir := c.systemdUnitDirFor(c.otherScope())
+	var found []string
+	for _, name := range []string{serviceName + ".service", serviceName + ".timer"} {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			found = append(found, p)
+		}
+	}
+	return found
+}
+
+// uninstallHint is the command a user would run to remove an install of the given scope.
+func uninstallHint(scope Scope) string {
+	if scope == ScopeSystem {
+		return "sudo agenthubctl fleet uninstall --system"
+	}
+	return "agenthubctl fleet uninstall --user"
+}
+
+// crossScopeGuard handles the issue #42 orphan case: an existing install in the *opposite*
+// scope. Default is fail-fast — abort with the exact command to remove the orphan — because
+// silently tearing down the other scope touches a live watchdog/boot path without consent.
+// With --force we uninstall the other scope first so exactly one watchdog survives.
+// Same-scope reinstalls are idempotent (overwrite in place) and never reach here.
+func (c *Config) crossScopeGuard() error {
+	orphans := c.otherScopeSystemdUnits()
+	if len(orphans) == 0 {
+		return nil
+	}
+	other := c.otherScope()
+	if !c.Force {
+		return fmt.Errorf(
+			"existing %s-scope install found (%s) while installing %s scope.\n"+
+				"Re-installing here would orphan the %s-scope timer and run two watchdogs.\n"+
+				"Remove the old scope first, then re-run install:\n"+
+				"  %s\n"+
+				"Or pass --force to have install remove the %s-scope units automatically.",
+			other, strings.Join(orphans, ", "), c.Scope, other, uninstallHint(other), other)
+	}
+	fmt.Printf("--force: removing existing %s-scope install before installing %s scope...\n", other, c.Scope)
+	if err := c.withScope(other).uninstallSystemd(); err != nil {
+		return fmt.Errorf("clean up %s-scope install (try: %s): %w", other, uninstallHint(other), err)
+	}
+	return nil
 }
 
 // systemctlArgs prefixes --user for user-scope invocations.
@@ -45,15 +116,31 @@ func (c *Config) installSystemd(dryRun bool) error {
 	tmrPath := filepath.Join(dir, serviceName+".timer")
 
 	if dryRun {
+		actions := []string{
+			"systemctl " + strings.Join(c.systemctlArgs("daemon-reload"), " "),
+			"systemctl " + strings.Join(c.systemctlArgs("enable", "--now", serviceName+".timer"), " "),
+		}
+		if orphans := c.otherScopeSystemdUnits(); len(orphans) > 0 {
+			other := c.otherScope()
+			note := fmt.Sprintf("NOTE: %s-scope install present (%s) — install would ABORT (pass --force to remove it: %s)",
+				other, strings.Join(orphans, ", "), uninstallHint(other))
+			if c.Force {
+				note = fmt.Sprintf("NOTE: --force will first run `%s` to remove the %s-scope install (%s)",
+					uninstallHint(other), other, strings.Join(orphans, ", "))
+			}
+			actions = append([]string{note}, actions...)
+		}
 		printDryRun(c, []genFile{
 			{svcPath, svc},
 			{tmrPath, tmr},
 			{c.EnvFile + "  (scaffold — written only if absent)", env},
-		}, []string{
-			"systemctl " + strings.Join(c.systemctlArgs("daemon-reload"), " "),
-			"systemctl " + strings.Join(c.systemctlArgs("enable", "--now", serviceName+".timer"), " "),
-		})
+		}, actions)
 		return nil
+	}
+
+	// 0. orphan guard: a prior install in the *other* scope would leave two watchdogs.
+	if err := c.crossScopeGuard(); err != nil {
+		return err
 	}
 
 	// 1. env scaffold (never clobbers an existing file that may hold secrets)

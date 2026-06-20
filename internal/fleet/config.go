@@ -66,12 +66,14 @@ type Config struct {
 	BootSec   int
 	ActiveSec int
 	Interval  int
+	Force     bool // if a different-scope install exists, tear it down instead of aborting
 }
 
 // ResolveOptions carries the install flags that influence resolution.
 type ResolveOptions struct {
 	ForceSystem bool
 	ForceUser   bool
+	Force       bool
 	Binary      string
 	EnvFile     string
 	Timeout     int
@@ -91,6 +93,7 @@ func Resolve(opt ResolveOptions) (*Config, error) {
 		ActiveSec: defaultActiveSec,
 		Interval:  defaultInterval,
 		PATH:      os.Getenv("PATH"),
+		Force:     opt.Force,
 	}
 	if opt.Timeout > 0 {
 		c.Timeout = opt.Timeout

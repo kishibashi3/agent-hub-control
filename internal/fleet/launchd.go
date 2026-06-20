@@ -17,6 +17,10 @@ func (c *Config) launchdPlistPath() string {
 	return filepath.Join(c.Home, "Library", "LaunchAgents", launchdLabel+".plist")
 }
 
+// installLaunchd has no cross-scope orphan guard (cf. issue #42 / installSystemd): launchd
+// here is always a per-user LaunchAgent (gui/<uid>) — Resolve rejects --system on macOS —
+// so the plist path is invariant and a re-install overwrites it in place. There is no
+// second scope to orphan.
 func (c *Config) installLaunchd(dryRun bool) error {
 	plist, err := renderLaunchdPlist(c)
 	if err != nil {
