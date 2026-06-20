@@ -19,7 +19,15 @@ func (c *Config) systemdUnitDirFor(scope Scope) string {
 	if scope == ScopeSystem {
 		return c.systemUnitDir()
 	}
-	base := os.Getenv("XDG_CONFIG_HOME")
+	// XDG_CONFIG_HOME in our own environment describes the *current* process's user. When we
+	// operate on another user's units as root (sudo), that value is root's (or unset) and
+	// must not be applied to the target — fall back to <their HOME>/.config. A relocated
+	// XDG_CONFIG_HOME for that user can't be seen here; warnCrossUserXDGBlindSpot surfaces it
+	// (issue #44, reviewer suggestion #1).
+	base := ""
+	if !c.targetingOtherUser() {
+		base = os.Getenv("XDG_CONFIG_HOME")
+	}
 	if base == "" {
 		base = filepath.Join(c.Home, ".config")
 	}
@@ -43,6 +51,15 @@ func (c *Config) geteuid() int {
 		return c.euidOverride()
 	}
 	return os.Geteuid()
+}
+
+// targetingOtherUser reports whether we run as root (sudo) but the resolved fleet target is
+// a different, non-root user. In that case the process's own environment — XDG_CONFIG_HOME
+// and the `--user` session bus — describes root, not the user whose units we must read and
+// whose *live* timer we must stop (issue #44). euid goes through c.geteuid() so the #52
+// injection point covers this branch too.
+func (c *Config) targetingOtherUser() bool {
+	return c.geteuid() == 0 && c.UID != 0
 }
 
 // otherScope is the scope opposite to c.Scope.
@@ -131,6 +148,20 @@ func (c *Config) cannotRemoveScopeUnprivileged(scope Scope) bool {
 	return scope == ScopeSystem && c.geteuid() != 0
 }
 
+// warnCrossUserXDGBlindSpot surfaces reviewer suggestion #1 (issue #44): under sudo we can't
+// read the *target* user's XDG_CONFIG_HOME, so we probe <their HOME>/.config for user-scope
+// units. Warn that a relocated XDG_CONFIG_HOME for that user could hide a user-scope orphan
+// from otherScopeSystemdUnits — a detection blind spot, surfaced rather than left silent.
+func (c *Config) warnCrossUserXDGBlindSpot() {
+	if !c.targetingOtherUser() {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"note: running as root for user %s — probing %s for user-scope units.\n"+
+			"  If %s sets a non-standard XDG_CONFIG_HOME, a user-scope orphan there may go undetected.\n\n",
+		c.User, c.systemdUnitDirFor(ScopeUser), c.User)
+}
+
 // systemctlArgs prefixes --user for user-scope invocations.
 func (c *Config) systemctlArgs(args ...string) []string {
 	if c.Scope == ScopeUser {
@@ -140,6 +171,7 @@ func (c *Config) systemctlArgs(args ...string) []string {
 }
 
 func (c *Config) installSystemd(dryRun bool) error {
+	c.warnCrossUserXDGBlindSpot()
 	svc, err := renderSystemdService(c)
 	if err != nil {
 		return fmt.Errorf("render service: %w", err)
@@ -227,10 +259,56 @@ func (c *Config) installSystemd(dryRun bool) error {
 	return nil
 }
 
-func (c *Config) uninstallSystemd() error {
-	// Best-effort teardown; ignore errors (units may already be gone).
+// stopSystemdUnits stops + disables the live timer/service for this scope. It returns a
+// human-readable warning when the live stop could NOT be guaranteed — so the caller can tell
+// the operator that removing the unit files alone may leave a user-scope timer running until
+// the target user's next daemon-reload / login, rather than silently breaking the "exactly
+// one watchdog" invariant (issue #44). All systemctl calls are best-effort; the caller
+// removes the unit files regardless.
+func (c *Config) stopSystemdUnits() string {
+	// Root-driven user-scope teardown where we can't identify the invoking user (SUDO_USER
+	// unset/root): `systemctl --user` would bind to root's own bus, never the real user's, so
+	// removing files won't stop their live timer.
+	if c.Scope == ScopeUser && c.geteuid() == 0 && c.UID == 0 {
+		return fmt.Sprintf("could not identify the invoking user (set SUDO_USER) — removed unit "+
+			"files but a live user-scope %s.timer may still run; stop it with "+
+			"`systemctl --user disable --now %s.timer` as that user (self-heals on next login)",
+			serviceName, serviceName)
+	}
+
+	// Cross-user user scope (root via sudo): reach the invoking user's session bus so the
+	// *live* timer is stopped, not just the unit file deleted.
+	if c.Scope == ScopeUser && c.targetingOtherUser() {
+		runtimeDir := fmt.Sprintf("/run/user/%d", c.UID)
+		if _, err := os.Stat(runtimeDir); err != nil {
+			// No live user manager (no runtime dir) → there is no live timer to stop; the file
+			// removal below is sufficient and a future login self-heals.
+			return fmt.Sprintf("user %s has no active login session (%s missing) — removed unit "+
+				"files; any user-scope %s.timer self-heals on their next login",
+				c.User, runtimeDir, serviceName)
+		}
+		if err := c.runSystemctlQuiet("disable", "--now", serviceName+".timer"); err != nil {
+			return fmt.Sprintf("failed to stop the live user-scope %s.timer for %s via their session "+
+				"bus (%v) — removed unit files; run `systemctl --user disable --now %s.timer` as %s "+
+				"if it persists", serviceName, c.User, err, serviceName, c.User)
+		}
+		_ = c.runSystemctlQuiet("stop", serviceName+".service")
+		return ""
+	}
+
+	// System scope, or a user removing their own units: the default bus is correct.
 	_ = c.runSystemctlQuiet("disable", "--now", serviceName+".timer")
 	_ = c.runSystemctlQuiet("stop", serviceName+".service")
+	return ""
+}
+
+func (c *Config) uninstallSystemd() error {
+	// Stop + disable the live units first, then remove the files. A non-empty warning means we
+	// could not reach the right session manager — surfacing that on-disk removal alone leaves a
+	// live user timer until the next daemon-reload / re-login (issue #44).
+	if warn := c.stopSystemdUnits(); warn != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warn)
+	}
 
 	dir := c.systemdUnitDir()
 	var removed []string
@@ -274,7 +352,8 @@ func (c *Config) statusSystemd() error {
 	fmt.Printf("timer is-active:  %s\n", c.systemctlQuery("is-active", serviceName+".timer"))
 	fmt.Println()
 
-	_, _ = execSystemctl(c.systemctlArgs("list-timers", serviceName+".timer", "--no-pager"), true)
+	name, argv := c.systemctlInvocation("list-timers", serviceName+".timer", "--no-pager")
+	_, _ = execSystemctl(name, argv, true)
 	return nil
 }
 
@@ -329,18 +408,20 @@ func printEnvFilePermWarning(path string) {
 	}
 }
 
-// execSystemctl is the single seam through which this package runs the systemctl binary.
-// systemctl resolves units by *name*, so tempdir-isolated unit files do not isolate it: a
-// test that reached the real binary once ran `systemctl --user disable --now
-// agent-hub-fleet.timer` against the live watchdog (issue #55). Tests replace this with a
-// recorder in TestMain; production keeps the real exec.
+// execSystemctl is the single seam through which this package runs systemctl (or the
+// `sudo -u <user> env … systemctl` wrapper for a cross-user teardown, issue #44 — name is the
+// executable, argv its arguments). systemctl resolves units by *name*, so tempdir-isolated
+// unit files do not isolate it: a test that reached the real binary once ran
+// `systemctl --user disable --now agent-hub-fleet.timer` against the live watchdog (issue #55).
+// Tests replace this with a recorder in TestMain; production keeps the real exec. Nothing in
+// this package may call exec.Command for systemctl directly.
 //
 // passthrough=true streams the child's stdout/stderr to ours (interactive install/status);
 // false captures stdout and returns it (queries and best-effort teardown).
 var execSystemctl = realSystemctl
 
-func realSystemctl(args []string, passthrough bool) ([]byte, error) {
-	cmd := exec.Command("systemctl", args...)
+func realSystemctl(name string, argv []string, passthrough bool) ([]byte, error) {
+	cmd := exec.Command(name, argv...)
 	if passthrough {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -349,21 +430,43 @@ func realSystemctl(args []string, passthrough bool) ([]byte, error) {
 	return cmd.Output()
 }
 
-func (c *Config) runSystemctl(args ...string) error {
+// systemctlInvocation returns the executable + argv for a systemctl call in this scope. For
+// a user-scope target owned by another user while we run as root (the sudo … --force teardown
+// of a user orphan), it drops to that user and points systemctl at their session bus via
+// XDG_RUNTIME_DIR, so `systemctl --user disable --now` stops the invoking user's *live* timer
+// instead of binding to root's empty user bus. Pure (no exec) for testability (issue #44).
+func (c *Config) systemctlInvocation(args ...string) (name string, argv []string) {
 	full := c.systemctlArgs(args...)
-	if _, err := execSystemctl(full, true); err != nil {
-		return fmt.Errorf("systemctl %s: %w", strings.Join(full, " "), err)
+	if c.Scope == ScopeUser && c.targetingOtherUser() {
+		runtimeDir := fmt.Sprintf("/run/user/%d", c.UID)
+		argv = []string{
+			"-u", c.User, "env",
+			"XDG_RUNTIME_DIR=" + runtimeDir,
+			"DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtimeDir + "/bus",
+			"systemctl",
+		}
+		return "sudo", append(argv, full...)
+	}
+	return "systemctl", full
+}
+
+func (c *Config) runSystemctl(args ...string) error {
+	name, argv := c.systemctlInvocation(args...)
+	if _, err := execSystemctl(name, argv, true); err != nil {
+		return fmt.Errorf("systemctl %s: %w", strings.Join(c.systemctlArgs(args...), " "), err)
 	}
 	return nil
 }
 
 func (c *Config) runSystemctlQuiet(args ...string) error {
-	_, err := execSystemctl(c.systemctlArgs(args...), false)
+	name, argv := c.systemctlInvocation(args...)
+	_, err := execSystemctl(name, argv, false)
 	return err
 }
 
 func (c *Config) systemctlQuery(args ...string) string {
-	out, _ := execSystemctl(c.systemctlArgs(args...), false)
+	name, argv := c.systemctlInvocation(args...)
+	out, _ := execSystemctl(name, argv, false)
 	s := strings.TrimSpace(string(out))
 	if s == "" {
 		return "unknown"

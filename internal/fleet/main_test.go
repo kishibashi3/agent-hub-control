@@ -16,10 +16,17 @@ var systemctlCalls struct {
 	args [][]string
 }
 
-func recordSystemctl(args []string, _ bool) ([]byte, error) {
+// recordSystemctl records argv for a plain systemctl call, and name+argv when the package
+// wrapped the call (e.g. `sudo -u <user> env … systemctl --user …`, issue #44) so assertions on
+// the plain form stay unchanged while the wrapper is still visible.
+func recordSystemctl(name string, argv []string, _ bool) ([]byte, error) {
 	systemctlCalls.Lock()
 	defer systemctlCalls.Unlock()
-	systemctlCalls.args = append(systemctlCalls.args, append([]string(nil), args...))
+	rec := append([]string(nil), argv...)
+	if name != "systemctl" {
+		rec = append([]string{name}, rec...)
+	}
+	systemctlCalls.args = append(systemctlCalls.args, rec)
 	return nil, nil
 }
 
