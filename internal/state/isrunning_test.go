@@ -1,9 +1,11 @@
 package state_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +30,7 @@ func fakeBridge(t *testing.T, handle string) int {
 // ない → 幽霊 running として false を返す (issue #47)。type 未記録でも検出できることが要点。
 func TestIsRunningGhostPID(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("relies on /proc/<pid>/cmdline")
+		t.Skip("relies on /proc/<pid>/cmdline and /proc/<pid>/stat")
 	}
 	for _, typ := range []string{"", "bridge-claude2"} {
 		e := &state.Entry{Handle: "ntv-batch-coder", PID: os.Getpid(), BridgeType: typ}
@@ -41,7 +43,7 @@ func TestIsRunningGhostPID(t *testing.T) {
 // TestIsRunningRealBridgeArgv: argv が本物の bridge の形なら handle 一致で true、別 handle なら false。
 func TestIsRunningRealBridgeArgv(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("relies on /proc/<pid>/cmdline")
+		t.Skip("relies on /proc/<pid>/cmdline and /proc/<pid>/stat")
 	}
 	pid := fakeBridge(t, "alpha")
 	// /proc/<pid>/cmdline が exec 後の argv に置き換わるのを待つ。
@@ -75,6 +77,36 @@ func bridgeArgvMatches(pid int, handle string) bool {
 	return err == nil && state.LooksLikeBridgeProcess(argv, handle)
 }
 
+// procState は /proc/<pid>/stat の state 欄 (R/S/D/Z/T...) を返す。comm は括弧付きで空白や ')' を
+// 含みうるので、最後の ')' の後から読む。read / parse 失敗は "" に潰さず error で返し、
+// 呼び出し側の診断 (Fatalf) に原因が残るようにする。
+func procState(pid int) (string, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return "", err
+	}
+	s := string(data)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return "", fmt.Errorf("/proc/%d/stat: no ')' in %q", pid, s)
+	}
+	fields := strings.Fields(s[i+1:])
+	if len(fields) == 0 {
+		return "", fmt.Errorf("/proc/%d/stat: no state field after comm in %q", pid, s)
+	}
+	return fields[0], nil
+}
+
+// mustProcState は procState の失敗を即 Fatalf にする test helper。
+func mustProcState(t *testing.T, pid int) string {
+	t.Helper()
+	st, err := procState(pid)
+	if err != nil {
+		t.Fatalf("read proc state of pid %d: %v", pid, err)
+	}
+	return st
+}
+
 func mustArgv(pid int) []string {
 	argv, _ := state.ReadCmdline(pid)
 	return argv
@@ -84,7 +116,7 @@ func mustArgv(pid int) []string {
 // 空 argv を「不明」扱いで true に倒すと幽霊 running が再発するので、false を要求する。
 func TestIsRunningZombiePID(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("relies on /proc/<pid>/cmdline")
+		t.Skip("relies on /proc/<pid>/cmdline and /proc/<pid>/stat")
 	}
 	cmd := exec.Command("/bin/sh", "-c", "exit 0")
 	cmd.Args = []string{"bridge-fake", "-c", "exit 0", "--participant", "zed"}
@@ -93,11 +125,14 @@ func TestIsRunningZombiePID(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 	t.Cleanup(func() { _ = cmd.Wait() })
-	// zombie 化 (cmdline が空になる) を待つ。
+	// zombie 化を /proc/<pid>/stat の state 欄 ('Z') で待つ。cmdline が空になるのを待つと、
+	// exec 直後の一瞬 (新 mm の arg_start/arg_end 設定前) にも cmdline が空に見えるため
+	// 「まだ生きている sh」を zombie と誤認してループを抜け、IsRunning が真の argv を読んで
+	// true を返す flake になる (issue #63)。
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if argv, err := state.ReadCmdline(pid); err == nil && len(argv) == 0 {
-			break
+	for st := mustProcState(t, pid); st != "Z"; st = mustProcState(t, pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d did not become zombie within 2s (stat state %q)", pid, st)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
