@@ -16,9 +16,9 @@ import (
 
 // ReadCmdline は /proc/<pid>/cmdline を読んでプロセスの argv を返す。
 // cmdline は NUL 区切り。読めない (プロセス消滅 / procfs 非対応) 場合は error を返す。
-// 読めたが空 (zombie は cmdline が空になる) 場合は空 slice を error 無しで返す —
-// 「読めない」と「読めたが bridge ではない」を呼び出し側で区別できるようにするため。
-// 空 argv を「不明 = 生きているとみなす」に倒すと、zombie が幽霊 running になる (issue #47 と同 failure class)。
+// 読めたが空 (zombie / exec 直後の窓では cmdline が空になる) 場合は空 slice を error 無しで返す —
+// 「読めない」と「読めたが argv が無い」を呼び出し側で区別し、stat / exe で切り分けられるようにするため
+// (IsBridgeProcess / emptyArgvIsBridge, issue #47 / #65)。
 func ReadCmdline(pid int) ([]string, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil {
@@ -88,11 +88,64 @@ func LooksLikeBridgeExe(exe string) bool {
 	return strings.HasPrefix(filepath.Base(exe), "bridge-")
 }
 
+// ReadProcState は /proc/<pid>/stat の state 欄 (R/S/D/Z/T/X...) を返す。
+// comm は括弧付きで空白や ')' を含みうるので、最後の ')' の後から読む。
+func ReadProcState(pid int) (string, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return "", err
+	}
+	s := string(data)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return "", fmt.Errorf("/proc/%d/stat: no ')' in %q", pid, s)
+	}
+	fields := strings.Fields(s[i+1:])
+	if len(fields) == 0 {
+		return "", fmt.Errorf("/proc/%d/stat: no state field after comm in %q", pid, s)
+	}
+	return fields[0], nil
+}
+
+// emptyArgvIsBridge は cmdline が空 (argv 無し) の生きた PID を bridge とみなすかを決める (issue #65)。
+//
+// cmdline が空に見えるプロセスは 3 種類ある:
+//   - zombie: mm が解放済み。stat の state は 'Z' (reap 直前は 'X')。→ false (issue #47 の幽霊 running 防止)
+//   - exec 直後の窓: execve の中で新 mm に切り替わってから (exec_mmap) ELF loader が
+//     arg_start/arg_end を設定するまでの ms 未満の区間。spawn 側の Start() は close-on-exec で
+//     exec 成功を検知して戻るため、この窓は state 保存後に status / reconcile から観測されうる。
+//     kernel は exe_file を exec_mmap より前に新バイナリへ切り替える (fs/exec.c begin_new_exec) ので、
+//     この窓でも /proc/<pid>/exe は既に bridge バイナリを指す。→ exe が bridge-* なら true
+//   - kernel thread (kworker 等) や別 uid のプロセス: PID 再利用先がこれだった場合。exe の readlink は
+//     root / 同一 uid なら ENOENT (mm 無し)、非 root から root 所有を見ると EACCES
+//     (ptrace_may_access)。→ false
+//
+// exe が読めないときは一律 false に倒す。守りたい「自分が spawn した直後の子」は同一 uid なので exe は
+// 必ず読め、別 uid の bridge は cmdline (world-readable) から argv が取れてこの分岐には来ない。
+// つまり exe 不可読で true に倒して救えるケースは無く、逆に user scope の fleet / watchdog が
+// dead bridge の PID を再利用した root 所有の kernel thread を永久に running 扱いする (#47 と同型の
+// 幽霊 running) 損失だけが残る (PR #68 review Critical 1)。
+// この経路では handle の突合ができない (argv が無い) ので、同一 uid の別 handle bridge に PID が
+// 再利用された瞬間に窓と重なると自 handle として running 報告しうる。窓は ms 未満・exe は bridge-* に
+// 限られるため既知のトレードオフとして受け入れる (テストで可視化: TestIsRunningExecWindowEmptyArgv)。
+func emptyArgvIsBridge(pid int) bool {
+	st, err := ReadProcState(pid)
+	if err != nil || st == "Z" || st == "X" {
+		return false
+	}
+	exe, err := ReadExe(pid)
+	if err != nil {
+		return false
+	}
+	return LooksLikeBridgeExe(exe)
+}
+
 // IsBridgeProcess は PID が指定 handle の本物の bridge プロセスかを /proc で判定する。
 //
 //  1. argv (/proc/<pid>/cmdline) が LooksLikeBridgeProcess を満たすこと
 //  2. exe (/proc/<pid>/exe) が読めるなら、その basename も "bridge-" prefix を持つこと
 //
+// argv が空のときは zombie か exec 直後の窓かを stat / exe で切り分ける (emptyArgvIsBridge, issue #65)。
 // exe が読めない (別 uid の bridge を root 以外から見た場合、非 Linux 等) ときは argv 判定のみに
 // フォールバックする — 誤って false に倒すと稼働中 bridge が dead 扱いになり watchdog が
 // 重複 spawn するため。cmdline 自体が読めないときは error を返し、呼び出し側が
@@ -101,6 +154,9 @@ func IsBridgeProcess(pid int, handle string) (bool, error) {
 	argv, err := ReadCmdline(pid)
 	if err != nil {
 		return false, err
+	}
+	if len(argv) == 0 {
+		return emptyArgvIsBridge(pid), nil
 	}
 	if !LooksLikeBridgeProcess(argv, handle) {
 		return false, nil
