@@ -135,30 +135,10 @@ func TestIsRunningSpoofedArgvExe(t *testing.T) {
 	}
 }
 
-// procState は /proc/<pid>/stat の state 欄 (R/S/D/Z/T...) を返す。comm は括弧付きで空白や ')' を
-// 含みうるので、最後の ')' の後から読む。read / parse 失敗は "" に潰さず error で返し、
-// 呼び出し側の診断 (Fatalf) に原因が残るようにする。
-func procState(pid int) (string, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return "", err
-	}
-	s := string(data)
-	i := strings.LastIndexByte(s, ')')
-	if i < 0 {
-		return "", fmt.Errorf("/proc/%d/stat: no ')' in %q", pid, s)
-	}
-	fields := strings.Fields(s[i+1:])
-	if len(fields) == 0 {
-		return "", fmt.Errorf("/proc/%d/stat: no state field after comm in %q", pid, s)
-	}
-	return fields[0], nil
-}
-
-// mustProcState は procState の失敗を即 Fatalf にする test helper。
+// mustProcState は state.ReadProcState の失敗を即 Fatalf にする test helper。
 func mustProcState(t *testing.T, pid int) string {
 	t.Helper()
-	st, err := procState(pid)
+	st, err := state.ReadProcState(pid)
 	if err != nil {
 		t.Fatalf("read proc state of pid %d: %v", pid, err)
 	}
@@ -243,6 +223,8 @@ func TestIsRunningExeDeleted(t *testing.T) {
 // /proc/<pid>/cmdline は "\x00" となり ReadCmdline は空 argv を返す — exec 直後 (新 mm の
 // arg_start/arg_end 設定前) に status / reconcile が観測する状態と ReadCmdline の見え方が一致する。
 // 引数無しの sh は stdin から読むため、pipe を握ったままにして生かしておく。
+// 前提: /bin/sh が dash / bash 系であること。busybox sh は argv[0]="" だと applet 名を解決できず
+// 即終了するため、その環境では precondition (Z 判定) で Fatalf になる (本ホスト dash / CI ubuntu は可)。
 func emptyArgvProcess(t *testing.T, bin string) int {
 	t.Helper()
 	cmd := exec.Command(bin)
@@ -253,13 +235,7 @@ func emptyArgvProcess(t *testing.T, bin string) int {
 	}
 	t.Cleanup(func() { _ = stdin.Close() })
 	pid := startFake(t, cmd)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if argv, err := state.ReadCmdline(pid); err == nil && len(argv) == 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// Start() は exec 成功後に戻り、argv は [""] なので cmdline は以後ずっと "\x00" (空 argv) — 待機不要。
 	if argv := mustArgv(pid); len(argv) != 0 {
 		t.Fatalf("precondition: pid %d argv %q, want empty", pid, argv)
 	}
@@ -287,6 +263,49 @@ func TestIsRunningExecWindowEmptyArgv(t *testing.T) {
 	if ok, err := state.IsBridgeProcess(pid, "alpha"); err != nil || !ok {
 		t.Errorf("IsBridgeProcess = (%v, %v), want (true, nil)", ok, err)
 	}
+	// 既知のトレードオフ: 空 argv では handle を突合できないので、別 handle でも true になる
+	// (proc.go emptyArgvIsBridge の doc comment)。挙動を変えたら本 assert を更新すること。
+	if ok, err := state.IsBridgeProcess(pid, "other-handle"); err != nil || !ok {
+		t.Errorf("IsBridgeProcess(other handle) = (%v, %v), want (true, nil) as documented trade-off", ok, err)
+	}
+}
+
+// TestIsRunningEmptyArgvUnreadableExe: cmdline が空で生きていても /proc/<pid>/exe が読めない
+// (kernel thread の ENOENT、root 所有プロセスを非 root から見た EACCES) PID は false。
+// user scope の watchdog が dead bridge の PID を再利用した kworker 等を永久に running 扱いしない
+// こと (PR #68 review Critical 1)。ホスト上で該当 PID を探し、無ければ skip。
+func TestIsRunningEmptyArgvUnreadableExe(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("relies on /proc")
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Skip("no /proc")
+	}
+	for _, d := range entries {
+		var pid int
+		if _, err := fmt.Sscanf(d.Name(), "%d", &pid); err != nil || pid <= 0 {
+			continue
+		}
+		argv, err := state.ReadCmdline(pid)
+		if err != nil || len(argv) != 0 {
+			continue
+		}
+		if st, err := state.ReadProcState(pid); err != nil || st == "Z" || st == "X" {
+			continue
+		}
+		if _, err := state.ReadExe(pid); err == nil {
+			continue
+		}
+		if ok, err := state.IsBridgeProcess(pid, "alpha"); err != nil || ok {
+			t.Errorf("pid %d (empty argv, unreadable exe): IsBridgeProcess = (%v, %v), want (false, nil)", pid, ok, err)
+		}
+		if e := (&state.Entry{Handle: "alpha", PID: pid}); e.IsRunning() {
+			t.Errorf("pid %d (empty argv, unreadable exe) reported running", pid)
+		}
+		return
+	}
+	t.Skip("no live pid with empty argv and unreadable exe on this host")
 }
 
 // TestIsRunningEmptyArgvNonBridgeExe: cmdline が空で生きていても exe が bridge バイナリでなければ

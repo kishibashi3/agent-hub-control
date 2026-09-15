@@ -8,9 +8,7 @@
 package state
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,12 +116,18 @@ func ReadProcState(pid int) (string, error) {
 //     exec 成功を検知して戻るため、この窓は state 保存後に status / reconcile から観測されうる。
 //     kernel は exe_file を exec_mmap より前に新バイナリへ切り替える (fs/exec.c begin_new_exec) ので、
 //     この窓でも /proc/<pid>/exe は既に bridge バイナリを指す。→ exe が bridge-* なら true
-//   - kernel thread (kworker 等): mm が無く exe の readlink は ENOENT。PID 再利用先がこれだった場合。→ false
+//   - kernel thread (kworker 等) や別 uid のプロセス: PID 再利用先がこれだった場合。exe の readlink は
+//     root / 同一 uid なら ENOENT (mm 無し)、非 root から root 所有を見ると EACCES
+//     (ptrace_may_access)。→ false
 //
-// exe が ENOENT 以外で読めない (別 uid の EACCES 等) ときは検証不能なので alive 寄り (true) に倒す —
-// 誤って false に倒すと稼働中 bridge が dead 扱いになり watchdog が重複 spawn するため。
-// この経路では handle の突合ができない (argv が無い) が、窓は ms 未満かつ spawn 直後の自 PID に
-// 限られるので、別 handle の bridge に PID が再利用される確率は無視できる。
+// exe が読めないときは一律 false に倒す。守りたい「自分が spawn した直後の子」は同一 uid なので exe は
+// 必ず読め、別 uid の bridge は cmdline (world-readable) から argv が取れてこの分岐には来ない。
+// つまり exe 不可読で true に倒して救えるケースは無く、逆に user scope の fleet / watchdog が
+// dead bridge の PID を再利用した root 所有の kernel thread を永久に running 扱いする (#47 と同型の
+// 幽霊 running) 損失だけが残る (PR #68 review Critical 1)。
+// この経路では handle の突合ができない (argv が無い) ので、同一 uid の別 handle bridge に PID が
+// 再利用された瞬間に窓と重なると自 handle として running 報告しうる。窓は ms 未満・exe は bridge-* に
+// 限られるため既知のトレードオフとして受け入れる (テストで可視化: TestIsRunningExecWindowEmptyArgv)。
 func emptyArgvIsBridge(pid int) bool {
 	st, err := ReadProcState(pid)
 	if err != nil || st == "Z" || st == "X" {
@@ -131,7 +135,7 @@ func emptyArgvIsBridge(pid int) bool {
 	}
 	exe, err := ReadExe(pid)
 	if err != nil {
-		return !errors.Is(err, fs.ErrNotExist)
+		return false
 	}
 	return LooksLikeBridgeExe(exe)
 }
