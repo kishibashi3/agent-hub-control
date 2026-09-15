@@ -22,8 +22,14 @@ type Entry struct {
 	StartedAt  string `json:"started_at"`
 }
 
-// IsRunning はプロセスが実行中かどうかを返す。
-// PID 再利用による誤判定を防ぐため /proc/<pid>/comm でプロセス名も確認する。
+// IsRunning はこの entry の handle に対応する bridge プロセスが実際に稼働しているかを返す。
+//
+// PID が生きているだけでは不十分で (kill 後に PID が別プロセスへ再利用されうる)、
+// /proc/<pid>/cmdline を読んで「bridge-* バイナリが --participant <handle> を持つ」ことまで
+// 確認する (issue #47: 実プロセス無しの handle が running と表示され続けた幽霊 running の再発防止)。
+// bridge type 未記録の entry でも handle ベースで突合できるため、旧 comm 突合 (issue #1) が
+// スキップされていた穴を塞ぐ。cmdline が読めない環境 (非 Linux 等) では従来の comm 突合に
+// フォールバックする。
 func (e *Entry) IsRunning() bool {
 	if e.PID <= 0 {
 		return false
@@ -35,13 +41,17 @@ func (e *Entry) IsRunning() bool {
 	if proc.Signal(syscall.Signal(0)) != nil {
 		return false
 	}
-	// PID reuse guard: bridge type が記録されている場合はプロセス名と突合する (issue #1)
+	// 実プロセス突合: PID は生きているが、それがこの handle の bridge でなければ幽霊 (issue #47)。
+	if argv := ReadCmdline(e.PID); argv != nil {
+		return LooksLikeBridgeProcess(argv, e.Handle)
+	}
+	// /proc/cmdline が読めない環境: PID reuse guard として bridge type が記録されていれば
+	// プロセス名と突合する (issue #1)。
 	if e.BridgeType == "" {
 		return true
 	}
 	comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", e.PID))
 	if err != nil {
-		// /proc が読めない環境（非 Linux 等）はスキップ
 		return true
 	}
 	return strings.TrimSpace(string(comm)) == e.BridgeType

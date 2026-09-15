@@ -214,3 +214,27 @@ func TestResolveBakesAbsoluteBinaryAndDefaults(t *testing.T) {
 		t.Errorf("env file not absolute: %q", c.EnvFile)
 	}
 }
+
+// TestCrossScopeGuardUserScopeSystemOrphanNonRoot: a non-root user-scope install that finds a
+// system-scope orphan cannot remove it (no sudo). Without --force it still aborts; with --force
+// it proceeds (warning only) so the sudo-less user watchdog is not blocked behind root
+// (issue #47). Probing the real /etc/systemd/system is unavoidable here, so the test only runs
+// when that orphan actually exists on the host; otherwise the guard is a trivial no-op.
+func TestCrossScopeGuardUserScopeSystemOrphanNonRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("non-root only")
+	}
+	c := &Config{Scope: ScopeUser, Home: t.TempDir()}
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if len(c.otherScopeSystemdUnits()) == 0 {
+		t.Skip("no system-scope agent-hub-fleet units on this host")
+	}
+	c.Force = false
+	if err := c.crossScopeGuard(); err == nil {
+		t.Fatal("expected abort without --force when a system-scope orphan exists")
+	}
+	c.Force = true
+	if err := c.crossScopeGuard(); err != nil {
+		t.Fatalf("--force as non-root should proceed with a warning, got: %v", err)
+	}
+}

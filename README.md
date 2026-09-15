@@ -55,6 +55,10 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 
 - `bridge list` — state のエントリに加え、state に無い稼働中 bridge を `untracked` として併記し、
   dead エントリ・untracked プロセスを検出したら `sync` / `prune` をサジェストする。
+  **running 判定は PID 生存ではなく実プロセス突合**: `/proc/<pid>/cmdline` を読み、その PID が
+  `bridge-*` バイナリで `--participant <handle>` を持つことを確認する。kill 後に PID が別プロセス
+  へ再利用されても「幽霊 running」にならない（issue #47。旧実装は bridge type 未記録の entry で
+  この突合をスキップしていた）。同じ判定を `start --all` / `status` / watchdog も共有する。
 - `bridge stop <handle>` — state に無くても / state の PID が死んでいても、実際に動いている
   bridge プロセスを発見して停止する（reconcile してから stop）。
 - `bridge sync` — dead エントリの削除 + untracked プロセスの adopt を一括で行う。
@@ -112,10 +116,57 @@ agenthubctl fleet install --dry-run
 agenthubctl fleet install
 ```
 
+#### sudo 無しでの導入（推奨: user-level timer）
+
+`/etc` に触れない user-level timer なら root は一切不要。boot-start に必要な linger も
+自分自身に対しては sudo 無しで有効化できる。
+
+```sh
+make install                                   # 最新 agenthubctl を GOBIN に配置
+agenthubctl fleet install --user               # ~/.config/systemd/user/ に unit を生成 + enable --now
+loginctl enable-linger "$USER"                 # ログイン無しで boot-start
+$EDITOR ~/.agent-hub/fleet.env                 # 下記「fleet.env の中身」
+journalctl --user -u agent-hub-fleet.service -n 3   # "Finished ..." が出れば導入完了
+```
+
+**旧 system-level unit（`source ~/.bashrc` 版）が `/etc/systemd/system` に残っている場合**:
+そのままだと install は「二重 watchdog になる」として中断する（issue #42）。root が無く撤去
+できないときは `--force` を付けると **警告を出して user-level 導入を続行する**。旧 unit は
+root が取れたときに `sudo agenthubctl fleet uninstall --system` で撤去する（`bridge start --all`
+は冪等なので二重期間は無駄撃ちになるだけで壊れはしない）。
+
+```sh
+agenthubctl fleet install --user --force
+```
+
+#### fleet.env の中身 — なぜ `~/.bashrc` を source しないか
+
+Debian 標準の `~/.bashrc` は先頭で `case $- in *i*) ;; *) return;; esac` と非対話 shell を
+即 return するため、`ExecStart=/bin/bash -c 'source ~/.bashrc; agenthubctl ...'` では PATH も
+`AGENT_HUB_*` も一切載らず `agenthubctl: command not found`（exit 127）で毎回失敗する。
+timer 自体は `active (waiting)` に見えるので気づけない（2026-07-29 / 2026-09-13 の 2 度の
+全 bridge 復旧不能の原因, issue #47）。
+
+そのため生成 unit は shell を経由せず `EnvironmentFile=~/.agent-hub/fleet.env` から env を
+読み、`ExecStart` は agenthubctl の絶対 path を直接叩く。`fleet.env` には **手で spawn した
+bridge が持っている env をそのまま**書く。稼働中 bridge から写すのが確実:
+
+```sh
+# 稼働中 bridge の PID を bridge list で確認し、bridge 起動に要る変数だけ抜き出す
+tr '\0' '\n' < /proc/<pid>/environ \
+  | grep -E '^(PATH|HOME|NVM_DIR|GITHUB_PAT|AGENT_HUB_[A-Z_0-9]+|NODE_TLS_REJECT_UNAUTHORIZED)=' \
+  | sed -E 's/^([A-Z_0-9]+)=(.*)$/\1="\2"/' >> ~/.agent-hub/fleet.env
+```
+
+書式は `KEY="value"` 1 行 1 変数（systemd EnvironmentFile 互換。`export` や `$VAR` 展開は不可）。
+`AGENT_HUB_BRIDGE_CLAUDE2_BIN` のような bridge binary の場所、`claude` CLI を含む `PATH`
+（nvm / mise の bin）を忘れると spawn が fail-fast する。反映は次の watchdog tick（既定 3 分）。
+
 - **OS 検出**: Linux + systemd → `.service` + `.timer`、macOS → launchd LaunchAgent `.plist`。
 - **scope**: root（`sudo`）なら `/etc/systemd/system` の system-level（ログイン不要で boot-start）。
   非 root なら `~/.config/systemd/user` の user-level。`--system` / `--user` で明示指定も可。
-- **user-level の boot-start**: ログインせず再起動を跨ぐには linger を有効化する:
+- **user-level の boot-start**: ログインせず再起動を跨ぐには linger を有効化する（自分自身への
+  enable-linger は sudo 不要）:
   ```sh
   loginctl enable-linger <user>
   ```
