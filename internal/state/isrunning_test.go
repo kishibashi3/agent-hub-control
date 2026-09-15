@@ -201,3 +201,40 @@ func TestIsRunningZombiePID(t *testing.T) {
 		}
 	}
 }
+
+// TestIsRunningExeDeleted: bridge バイナリが稼働中に置き換え・削除されると /proc/<pid>/exe は
+// ".../bridge-fake (deleted)" になる (make install で bridge-claude2 を更新した直後の全 bridge が
+// この状態)。exe 突合がこれを「bridge ではない」と誤判定すると、更新直後に全 bridge が dead 扱いに
+// なり watchdog が重複 spawn する (#50 が防ぎたい failure の逆流)。running 判定は true を維持すること。
+func TestIsRunningExeDeleted(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("relies on /proc/<pid>/exe")
+	}
+	bin := copyShAs(t, "bridge-fake")
+	pid := startFake(t, exec.Command(bin, "-c", "sleep 30; :", "bridge-fake", "--participant", "alpha"))
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !bridgeArgvMatches(pid, "alpha") {
+		time.Sleep(10 * time.Millisecond)
+	}
+	// 稼働中にバイナリを削除 → kernel は exe の readlink に " (deleted)" を付ける。
+	if err := os.Remove(bin); err != nil {
+		t.Fatalf("remove running binary: %v", err)
+	}
+	raw, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		t.Fatalf("readlink exe: %v", err)
+	}
+	if !strings.HasSuffix(raw, " (deleted)") {
+		t.Fatalf("precondition: expected ' (deleted)' suffix after removing the binary, got %q", raw)
+	}
+	exe, err := state.ReadExe(pid)
+	if err != nil || strings.HasSuffix(exe, " (deleted)") || !state.LooksLikeBridgeExe(exe) {
+		t.Errorf("ReadExe = (%q, %v): want suffix stripped and bridge- prefix kept", exe, err)
+	}
+	if e := (&state.Entry{Handle: "alpha", PID: pid, BridgeType: "bridge-claude2"}); !e.IsRunning() {
+		t.Errorf("bridge with replaced/deleted binary (exe=%q) reported not running", raw)
+	}
+	if ok, err := state.IsBridgeProcess(pid, "alpha"); err != nil || !ok {
+		t.Errorf("IsBridgeProcess = (%v, %v), want (true, nil)", ok, err)
+	}
+}
