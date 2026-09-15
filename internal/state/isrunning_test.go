@@ -238,3 +238,89 @@ func TestIsRunningExeDeleted(t *testing.T) {
 		t.Errorf("IsBridgeProcess = (%v, %v), want (true, nil)", ok, err)
 	}
 }
+
+// emptyArgvProcess は cmdline が空に見える生きたプロセスを起動して PID を返す。argv を [""] にすると
+// /proc/<pid>/cmdline は "\x00" となり ReadCmdline は空 argv を返す — exec 直後 (新 mm の
+// arg_start/arg_end 設定前) に status / reconcile が観測する状態と ReadCmdline の見え方が一致する。
+// 引数無しの sh は stdin から読むため、pipe を握ったままにして生かしておく。
+func emptyArgvProcess(t *testing.T, bin string) int {
+	t.Helper()
+	cmd := exec.Command(bin)
+	cmd.Args = []string{""}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stdin.Close() })
+	pid := startFake(t, cmd)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if argv, err := state.ReadCmdline(pid); err == nil && len(argv) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if argv := mustArgv(pid); len(argv) != 0 {
+		t.Fatalf("precondition: pid %d argv %q, want empty", pid, argv)
+	}
+	if st := mustProcState(t, pid); st == "Z" || st == "X" {
+		t.Fatalf("precondition: pid %d already dead (stat state %q)", pid, st)
+	}
+	return pid
+}
+
+// TestIsRunningExecWindowEmptyArgv: 生きている (stat が Z 以外) が cmdline が空、かつ exe が bridge
+// バイナリを指すプロセスは exec 直後の窓とみなし running を維持する (issue #65)。ここで false に倒すと
+// spawn 直後の status / fleet reconcile が生きた bridge を stopped 扱いして二重 spawn する。
+func TestIsRunningExecWindowEmptyArgv(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("relies on /proc/<pid>/cmdline, /proc/<pid>/stat and /proc/<pid>/exe")
+	}
+	pid := emptyArgvProcess(t, copyShAs(t, "bridge-fake"))
+	for _, typ := range []string{"", "bridge-fake"} {
+		e := &state.Entry{Handle: "alpha", PID: pid, BridgeType: typ}
+		if !e.IsRunning() {
+			t.Errorf("BridgeType=%q: live bridge exe with empty argv (pid %d, stat %s) reported not running",
+				typ, pid, mustProcState(t, pid))
+		}
+	}
+	if ok, err := state.IsBridgeProcess(pid, "alpha"); err != nil || !ok {
+		t.Errorf("IsBridgeProcess = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestIsRunningEmptyArgvNonBridgeExe: cmdline が空で生きていても exe が bridge バイナリでなければ
+// PID 再利用先の無関係なプロセスなので false。issue #65 の緩和が #47 の幽霊 running を再発させないこと。
+func TestIsRunningEmptyArgvNonBridgeExe(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("relies on /proc/<pid>/cmdline, /proc/<pid>/stat and /proc/<pid>/exe")
+	}
+	pid := emptyArgvProcess(t, "/bin/sh")
+	exe, err := state.ReadExe(pid)
+	if err != nil {
+		t.Fatalf("precondition: read exe of pid %d: %v", pid, err)
+	}
+	if state.LooksLikeBridgeExe(exe) {
+		t.Fatalf("precondition: /bin/sh resolved to %q which already looks like a bridge", exe)
+	}
+	if e := (&state.Entry{Handle: "alpha", PID: pid}); e.IsRunning() {
+		t.Errorf("non-bridge exe %q with empty argv reported running", exe)
+	}
+	if ok, err := state.IsBridgeProcess(pid, "alpha"); err != nil || ok {
+		t.Errorf("IsBridgeProcess = (%v, %v), want (false, nil)", ok, err)
+	}
+}
+
+// TestReadProcState: 自プロセスは R (running) か S (sleeping)。
+func TestReadProcState(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("relies on /proc/<pid>/stat")
+	}
+	st, err := state.ReadProcState(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st != "R" && st != "S" {
+		t.Errorf("own stat state = %q, want R or S", st)
+	}
+}
