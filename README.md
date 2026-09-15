@@ -70,7 +70,7 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 
 | command | 用途 |
 |---|---|
-| `bridge spawn [<handle>] [--workdir …] [--type …] [--tenant …]` | bridge 起動 |
+| `bridge spawn [<handle>] [--workdir …] [--type …] [--tenant …] [--model …]` | bridge 起動（`--model` は bridge-claude2 の `-model` に渡る。未指定なら bridge 内蔵 default） |
 | `bridge stop <handle>` | bridge 停止（実プロセスを発見して停止） |
 | `bridge restart <handle> \| --all` | 再起動 |
 | `bridge start <handle> \| --all` | 起動（config から） |
@@ -79,7 +79,7 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 | `bridge sync [--dry-run]` | state と実プロセスを整合 |
 | `bridge prune [--dry-run]` | dead エントリ削除 |
 | `bridge logs [-f] <handle>` | ログ表示 |
-| `bridge config set/get/list` | spawn 引数の保存 |
+| `bridge config set/get/list` | spawn 引数の保存（`--workdir` / `--tenant` / `--type` / `--display-name` / `--model`） |
 | `fleet install [--system\|--user] [--dry-run]` | 起動時＋定期で `bridge start --all` する boot-start + watchdog を導入 |
 | `fleet uninstall` | boot-start + watchdog を撤去（env ファイルは残す） |
 | `fleet status` | 導入状態・timer の有効/稼働・次回発火を表示 |
@@ -102,7 +102,7 @@ EnvironmentFile（既定 `~/.agent-hub/fleet.env`, mode 0600）側に置く。
 ### 前提（desired-state を先に登録）
 
 ```sh
-agenthubctl bridge config set <handle> -w <workdir> [--tenant <t>]   # fleet メンバーごと
+agenthubctl bridge config set <handle> -w <workdir> [--tenant <t>] [--model <id>]   # fleet メンバーごと
 agenthubctl bridge config list                                       # 正本を確認
 ```
 

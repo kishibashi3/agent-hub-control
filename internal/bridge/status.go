@@ -68,6 +68,7 @@ func runStatus(user string) error {
 	fmt.Printf("pid:      %d\n", entry.PID)
 	fmt.Printf("type:     %s\n", bridgeTypeOrDefault(entry.BridgeType))
 	fmt.Printf("tenant:   %s\n", tenantOrDefault(entry.Tenant))
+	fmt.Printf("model:    %s\n", modelOrDefault(entry.Model))
 	fmt.Printf("workdir:  %s\n", entry.Workdir)
 	fmt.Printf("log:      %s\n", entry.LogPath)
 	fmt.Printf("started:  %s\n", entry.StartedAt)

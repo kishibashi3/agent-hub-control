@@ -21,6 +21,9 @@ type Entry struct {
 	Tenant     string `json:"tenant,omitempty"`
 	LogPath    string `json:"log_path"`
 	StartedAt  string `json:"started_at"`
+	// Model は spawn 時に bridge へ渡した model id (issue #46)。空 = bridge 内蔵 default。
+	// restart / watchdog respawn が同じ model で起動し直すために記録する。
+	Model string `json:"model,omitempty"`
 }
 
 // IsRunning はこの entry の handle に対応する bridge プロセスが実際に稼働しているかを返す。
@@ -216,7 +219,7 @@ func (s *State) Save() error {
 }
 
 // Set は handle のエントリを追加/更新する。
-func (s *State) Set(handle string, pid int, bridgeType, workdir, tenant, logPath string) {
+func (s *State) Set(handle string, pid int, bridgeType, workdir, tenant, model, logPath string) {
 	s.Bridges[handle] = &Entry{
 		Handle:     handle,
 		PID:        pid,
@@ -225,6 +228,7 @@ func (s *State) Set(handle string, pid int, bridgeType, workdir, tenant, logPath
 		Tenant:     tenant,
 		LogPath:    logPath,
 		StartedAt:  time.Now().UTC().Format(time.RFC3339),
+		Model:      model,
 	}
 }
 

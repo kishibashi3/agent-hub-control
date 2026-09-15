@@ -15,6 +15,9 @@ type BridgeConfig struct {
 	Tenant      string `json:"tenant,omitempty"`
 	BridgeType  string `json:"type,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
+	// Model は bridge worker に渡す LLM model id (issue #46)。空 = bridge 内蔵 default。
+	// 検証はしない (bridge-claude2 も claude CLI にそのまま渡すだけで、id 一覧を持つと陳腐化する)。
+	Model string `json:"model,omitempty"`
 }
 
 func configDir() (string, error) {

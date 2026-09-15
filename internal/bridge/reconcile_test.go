@@ -40,7 +40,7 @@ func TestRunStopCleansStaleState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load locked: %v", err)
 	}
-	st.Set(handle, deadPID(t), "bridge-claude2", "/tmp/wd", "", "/tmp/log")
+	st.Set(handle, deadPID(t), "bridge-claude2", "/tmp/wd", "", "", "/tmp/log")
 	if err := st.Save(); err != nil {
 		unlock()
 		t.Fatalf("save: %v", err)
@@ -86,7 +86,7 @@ func TestRunListReconcilesRestartedHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load locked: %v", err)
 	}
-	st.Set(handle, deadPID(t), "bridge-claude2", "/tmp/wd", "", "/tmp/log")
+	st.Set(handle, deadPID(t), "bridge-claude2", "/tmp/wd", "", "", "/tmp/log")
 	if err := st.Save(); err != nil {
 		unlock()
 		t.Fatalf("save: %v", err)

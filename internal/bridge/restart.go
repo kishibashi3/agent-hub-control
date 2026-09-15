@@ -71,6 +71,8 @@ func runRestart(handle, displayName string, spawnTimeoutS int) error {
 
 	// エントリから spawn に必要な情報を保存
 	savedBridgeType := entry.BridgeType
+	// model は state に記録された値 (= 前回 spawn 時に渡した値) をそのまま引き継ぐ (issue #46)。
+	savedModel := entry.Model
 	if savedBridgeType == "" {
 		savedBridgeType = defaultBridgeType
 	}
@@ -119,7 +121,7 @@ func runRestart(handle, displayName string, spawnTimeoutS int) error {
 
 	// ── 3. spawn ─────────────────────────────────────────────────────────
 	fmt.Fprintf(os.Stderr, "re-spawning @%s (type=%s, workdir=%s)...\n", handle, savedBridgeType, savedWorkdir)
-	return runSpawn(handle, savedBridgeType, savedWorkdir, savedTenant, displayName, spawnTimeoutS)
+	return runSpawn(handle, savedBridgeType, savedWorkdir, savedTenant, displayName, savedModel, spawnTimeoutS)
 }
 
 func runRestartAll(spawnTimeoutS int) error {

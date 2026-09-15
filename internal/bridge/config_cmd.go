@@ -30,6 +30,7 @@ func newConfigSetCmd() *cobra.Command {
 		tenant      string
 		bridgeType  string
 		displayName string
+		model       string
 	)
 
 	cmd := &cobra.Command{
@@ -63,6 +64,9 @@ func newConfigSetCmd() *cobra.Command {
 			if displayName != "" {
 				existing.DisplayName = displayName
 			}
+			if model != "" {
+				existing.Model = model
+			}
 
 			if err := bridgecfg.Save(existing); err != nil {
 				return fmt.Errorf("save config: %w", err)
@@ -76,6 +80,7 @@ func newConfigSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tenant, "tenant", "", "default tenant ID")
 	cmd.Flags().StringVar(&bridgeType, "type", "", "bridge type (default: bridge-claude2)")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed on spawn")
+	cmd.Flags().StringVar(&model, "model", "", "LLM model id passed on spawn (bridge-claude2 only; empty = bridge default)")
 	return cmd
 }
 
@@ -102,6 +107,7 @@ func newConfigGetCmd() *cobra.Command {
 			fmt.Fprintf(w, "tenant\t%s\n", cfg.Tenant)
 			fmt.Fprintf(w, "type\t%s\n", bridgeType)
 			fmt.Fprintf(w, "display_name\t%s\n", cfg.DisplayName)
+			fmt.Fprintf(w, "model\t%s\n", modelOrDefault(cfg.Model))
 			return w.Flush()
 		},
 	}
@@ -122,18 +128,26 @@ func newConfigListCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "HANDLE\tTYPE\tTENANT\tWORKDIR\tDISPLAY_NAME")
+			fmt.Fprintln(w, "HANDLE\tTYPE\tTENANT\tMODEL\tWORKDIR\tDISPLAY_NAME")
 			for _, cfg := range cfgs {
 				bridgeType := cfg.BridgeType
 				if bridgeType == "" {
 					bridgeType = defaultBridgeType
 				}
-				fmt.Fprintf(w, "@%s\t%s\t%s\t%s\t%s\n",
-					cfg.Handle, bridgeType, cfg.Tenant, cfg.Workdir, cfg.DisplayName)
+				fmt.Fprintf(w, "@%s\t%s\t%s\t%s\t%s\t%s\n",
+					cfg.Handle, bridgeType, cfg.Tenant, modelOrDefault(cfg.Model), cfg.Workdir, cfg.DisplayName)
 			}
 			return w.Flush()
 		},
 	}
+}
+
+// modelOrDefault は表示用: 空の model は bridge 内蔵 default を使う意味なので "(default)" と出す。
+func modelOrDefault(model string) string {
+	if model == "" {
+		return "(default)"
+	}
+	return model
 }
 
 func newConfigDeleteCmd() *cobra.Command {

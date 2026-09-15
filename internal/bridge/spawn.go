@@ -32,6 +32,7 @@ func NewSpawnCmd() *cobra.Command {
 		bridgeType  string
 		timeout     int
 		displayName string
+		model       string
 	)
 
 	cmd := &cobra.Command{
@@ -71,9 +72,12 @@ func NewSpawnCmd() *cobra.Command {
 				if displayName == "" {
 					displayName = cfg.DisplayName
 				}
+				if model == "" {
+					model = cfg.Model
+				}
 			}
 
-			return runSpawn(participant, bridgeType, workdir, tenant, displayName, timeout)
+			return runSpawn(participant, bridgeType, workdir, tenant, displayName, model, timeout)
 		},
 	}
 
@@ -85,13 +89,14 @@ func NewSpawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&bridgeType, "type", defaultBridgeType, "bridge type (bridge-claude2, bridge-codex2, bridge-gemini, …)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge for register (falls back to bridge config)")
+	cmd.Flags().StringVar(&model, "model", "", "LLM model id passed to the bridge (bridge-claude2 only; falls back to bridge config, empty = bridge default)")
 
 	return cmd
 }
 
 var validHandle = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, timeoutS int) error {
+func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName, model string, timeoutS int) error {
 	if !validHandle.MatchString(participant) {
 		return fmt.Errorf("invalid handle %q: only [a-zA-Z0-9_-] allowed", participant)
 	}
@@ -170,6 +175,14 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 		if displayName != "" {
 			args = append(args, "-display-name", displayName)
 		}
+		// model は bridge-claude2 の -model フラグに渡す (issue #46)。bridge 側の解決順は
+		// -model > AGENT_HUB_MODEL env > claude default なので、未指定なら従来どおり。
+		if model != "" {
+			args = append(args, "-model", model)
+		}
+	} else if model != "" {
+		// 他 type には -display-name 同様に渡していない。保存はされるが効かないことを明示する。
+		fmt.Fprintf(os.Stderr, "warning: model %q is only passed to bridge-claude2; ignored for %s\n", model, bridgeType)
 	}
 
 	proc := exec.Command(binary, args...)
@@ -196,7 +209,7 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 	pid := proc.Process.Pid
 
 	// PID をロック保持中に即保存してから解放する
-	st.Set(participant, pid, bridgeType, wd, tenant, logPath)
+	st.Set(participant, pid, bridgeType, wd, tenant, model, logPath)
 	if err := st.Save(); err != nil {
 		unlock()
 		return fmt.Errorf("save state: %w", err)
