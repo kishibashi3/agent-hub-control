@@ -46,11 +46,11 @@ func TestIsRunningRealBridgeArgv(t *testing.T) {
 	pid := fakeBridge(t, "alpha")
 	// /proc/<pid>/cmdline が exec 後の argv に置き換わるのを待つ。
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !state.LooksLikeBridgeProcess(state.ReadCmdline(pid), "alpha") {
+	for time.Now().Before(deadline) && !bridgeArgvMatches(pid, "alpha") {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if e := (&state.Entry{Handle: "alpha", PID: pid}); !e.IsRunning() {
-		t.Errorf("fake bridge for alpha (pid %d, argv %q) not reported running", pid, state.ReadCmdline(pid))
+		t.Errorf("fake bridge for alpha (pid %d, argv %q) not reported running", pid, mustArgv(pid))
 	}
 	if e := (&state.Entry{Handle: "beta", PID: pid}); e.IsRunning() {
 		t.Errorf("fake bridge for alpha reported running for handle beta (PID reuse across handles)")
@@ -67,5 +67,44 @@ func TestIsRunningDeadPID(t *testing.T) {
 	_ = cmd.Wait()
 	if e := (&state.Entry{Handle: "x", PID: pid}); e.IsRunning() {
 		t.Errorf("reaped pid %d reported running", pid)
+	}
+}
+
+func bridgeArgvMatches(pid int, handle string) bool {
+	argv, err := state.ReadCmdline(pid)
+	return err == nil && state.LooksLikeBridgeProcess(argv, handle)
+}
+
+func mustArgv(pid int) []string {
+	argv, _ := state.ReadCmdline(pid)
+	return argv
+}
+
+// TestIsRunningZombiePID: 終了済みだが未 reap の子 (zombie) は Signal(0) が成功し cmdline が空になる。
+// 空 argv を「不明」扱いで true に倒すと幽霊 running が再発するので、false を要求する。
+func TestIsRunningZombiePID(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("relies on /proc/<pid>/cmdline")
+	}
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	cmd.Args = []string{"bridge-fake", "-c", "exit 0", "--participant", "zed"}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { _ = cmd.Wait() })
+	// zombie 化 (cmdline が空になる) を待つ。
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if argv, err := state.ReadCmdline(pid); err == nil && len(argv) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, typ := range []string{"", "bridge-fake"} {
+		e := &state.Entry{Handle: "zed", PID: pid, BridgeType: typ}
+		if e.IsRunning() {
+			t.Errorf("BridgeType=%q: zombie pid %d (argv %q) reported running", typ, pid, mustArgv(pid))
+		}
 	}
 }

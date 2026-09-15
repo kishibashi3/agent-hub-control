@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -42,10 +43,14 @@ func (e *Entry) IsRunning() bool {
 		return false
 	}
 	// 実プロセス突合: PID は生きているが、それがこの handle の bridge でなければ幽霊 (issue #47)。
-	if argv := ReadCmdline(e.PID); argv != nil {
-		return LooksLikeBridgeProcess(argv, e.Handle)
+	// Linux では /proc/<pid>/cmdline が正本。読めた以上は argv が空 (zombie) でも「bridge ではない」
+	// として false に倒す。読めない (kill 直後の消滅など) 場合だけ下の comm フォールバックへ。
+	if runtime.GOOS == "linux" {
+		if argv, err := ReadCmdline(e.PID); err == nil {
+			return LooksLikeBridgeProcess(argv, e.Handle)
+		}
 	}
-	// /proc/cmdline が読めない環境: PID reuse guard として bridge type が記録されていれば
+	// /proc/cmdline が使えない環境: PID reuse guard として bridge type が記録されていれば
 	// プロセス名と突合する (issue #1)。
 	if e.BridgeType == "" {
 		return true

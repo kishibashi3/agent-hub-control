@@ -89,7 +89,7 @@ func (c *Config) crossScopeGuard() error {
 	// sudo. Rather than blocking the (sudo-less) user watchdog behind a privileged step, --force
 	// proceeds and prints the exact cleanup command so the operator can retire the system-scope
 	// timer when they next have root (issue #47: the system unit was the one silently failing).
-	if other == ScopeSystem && os.Geteuid() != 0 {
+	if cannotRemoveScopeUnprivileged(other) {
 		fmt.Fprintf(os.Stderr,
 			"warning: --force cannot remove the %s-scope install without root (%s).\n"+
 				"  Proceeding with the %s-scope install anyway; until you remove the old units two\n"+
@@ -104,6 +104,12 @@ func (c *Config) crossScopeGuard() error {
 		return fmt.Errorf("clean up %s-scope install (try: %s): %w", other, uninstallHint(other), err)
 	}
 	return nil
+}
+
+// cannotRemoveScopeUnprivileged reports whether --force is unable to tear down an install in
+// the given scope from the current process: /etc/systemd/system units need root (issue #47).
+func cannotRemoveScopeUnprivileged(scope Scope) bool {
+	return scope == ScopeSystem && os.Geteuid() != 0
 }
 
 // systemctlArgs prefixes --user for user-scope invocations.
@@ -141,7 +147,7 @@ func (c *Config) installSystemd(dryRun bool) error {
 			if c.Force {
 				note = fmt.Sprintf("NOTE: --force will first run `%s` to remove the %s-scope install (%s)",
 					uninstallHint(other), other, strings.Join(orphans, ", "))
-				if other == ScopeSystem && os.Geteuid() != 0 {
+				if cannotRemoveScopeUnprivileged(other) {
 					note = fmt.Sprintf("NOTE: --force cannot remove the %s-scope install without root (%s) — "+
 						"install would PROCEED with a warning; retire it later with: %s",
 						other, strings.Join(orphans, ", "), uninstallHint(other))

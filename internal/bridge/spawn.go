@@ -351,7 +351,13 @@ func pgrepHandle(handle string) (int, error) {
 
 // readCmdline / looksLikeBridgeProcess は state package に移設した (issue #47: IsRunning でも
 // 同じ「本物の bridge か」判定を使うため)。bridge package 内の呼び出し元向けの薄い wrapper。
-func readCmdline(pid int) []string { return state.ReadCmdline(pid) }
+func readCmdline(pid int) []string {
+	argv, err := state.ReadCmdline(pid)
+	if err != nil {
+		return nil
+	}
+	return argv
+}
 
 func looksLikeBridgeProcess(argv []string, handle string) bool {
 	return state.LooksLikeBridgeProcess(argv, handle)

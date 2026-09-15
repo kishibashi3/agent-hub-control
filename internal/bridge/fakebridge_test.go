@@ -21,8 +21,13 @@ func fakeBridgePID(t *testing.T, handle string) int {
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	pid := cmd.Process.Pid
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !state.LooksLikeBridgeProcess(state.ReadCmdline(pid), handle) {
+	for time.Now().Before(deadline) && !bridgeArgvMatches(pid, handle) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return pid
+}
+
+func bridgeArgvMatches(pid int, handle string) bool {
+	argv, err := state.ReadCmdline(pid)
+	return err == nil && state.LooksLikeBridgeProcess(argv, handle)
 }

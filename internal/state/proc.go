@@ -15,17 +15,20 @@ import (
 )
 
 // ReadCmdline は /proc/<pid>/cmdline を読んでプロセスの argv を返す。
-// cmdline は NUL 区切り。読めない (プロセス消滅 / procfs 非対応) 場合は nil を返す。
-func ReadCmdline(pid int) []string {
+// cmdline は NUL 区切り。読めない (プロセス消滅 / procfs 非対応) 場合は error を返す。
+// 読めたが空 (zombie は cmdline が空になる) 場合は空 slice を error 無しで返す —
+// 「読めない」と「読めたが bridge ではない」を呼び出し側で区別できるようにするため。
+// 空 argv を「不明 = 生きているとみなす」に倒すと、zombie が幽霊 running になる (issue #47 と同 failure class)。
+func ReadCmdline(pid int) ([]string, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	parts := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
-	if len(parts) == 1 && parts[0] == "" {
-		return nil
+	trimmed := strings.TrimRight(string(data), "\x00")
+	if trimmed == "" {
+		return []string{}, nil
 	}
-	return parts
+	return strings.Split(trimmed, "\x00"), nil
 }
 
 // LooksLikeBridgeProcess は argv (あるプロセスの実コマンドライン) が、指定 handle の
