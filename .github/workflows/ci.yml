@@ -3,8 +3,8 @@ name: ci
 on:
   push:
     branches: [main]
+  # branches フィルタなし: stacked PR (base が feature branch) にも checks を付ける (issue #61)。
   pull_request:
-    branches: [main]
 
 # 同じ branch への新しい push が来たら古い run を cancel する
 # (= agent-hub-bridges / agent-hub-sdk と同じ運用)。
