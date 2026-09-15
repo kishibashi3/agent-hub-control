@@ -31,6 +31,12 @@ func TestBridgeLogPath(t *testing.T) {
 		t.Errorf("%s: got %q, want %q", state.BridgeLogDirEnv, got, want)
 	}
 
+	t.Setenv(state.BridgeLogDirEnv, "relative/logs")
+	if _, err := state.BridgeLogPath("alpha"); err == nil {
+		t.Errorf("relative %s must be rejected (dangling legacy symlink / cwd-dependent log_path)", state.BridgeLogDirEnv)
+	}
+	t.Setenv(state.BridgeLogDirEnv, "")
+
 	if got := state.LegacyBridgeLogPath("/tmp", "alpha"); got != "/tmp/bridge-alpha.log" {
 		t.Errorf("legacy: got %q", got)
 	}

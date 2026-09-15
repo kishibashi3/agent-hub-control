@@ -2,7 +2,7 @@
 //
 // 従来は /tmp/bridge-<handle>.log 固定だった。/tmp は (a) テストと実運用が同じパスを共有して
 // 汚染し合う、(b) 複数の AGENT_HUB_HOME (= 複数 fleet) が同一ホストで衝突する、(c) 予測可能な
-// world-writable ディレクトリ上のパスで symlink 攻撃面になる、という問題があったため、state
+// world-writable ディレクトリ上のパスで、他者の symlink を辿って書き込む欠陥があった、という問題があったため、state
 // (bridges.json) と同じく AGENT_HUB_HOME 配下に置く。default は bridge-claude2 自身の slog 正本
 // (~/.agent-hub/logs/bridge-<handle>.log) と同じディレクトリで、ファイル名を .out.log にして区別する
 // (fleet の fleet.out.log / fleet.err.log と同じ命名)。
@@ -33,6 +33,11 @@ func homeDir() (string, error) {
 // 優先順位: AGENT_HUB_BRIDGE_LOG_DIR > $AGENT_HUB_HOME/logs > ~/.agent-hub/logs
 func BridgeLogDir() (string, error) {
 	if d := os.Getenv(BridgeLogDirEnv); d != "" {
+		// 相対パスは bridges.json に cwd 依存の log_path を残し、/tmp からの互換 symlink が dangling に
+		// なるので絶対パスに限定する (PR #71 review Minor 5)。
+		if !filepath.IsAbs(d) {
+			return "", fmt.Errorf("%s must be an absolute path, got %q", BridgeLogDirEnv, d)
+		}
 		return d, nil
 	}
 	base, err := homeDir()

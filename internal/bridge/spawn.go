@@ -285,29 +285,43 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 }
 
 // legacyLogDir は旧固定ログパス /tmp/bridge-<handle>.log のディレクトリ。テストは t.TempDir() に
-// 差し替えて /tmp を汚さない (issue #54)。
+// 差し替えて /tmp を汚さない (issue #54)。package var をテストが書き換えるため、bridge package の
+// テストに t.Parallel() を足してはいけない。
 var legacyLogDir = "/tmp"
 
 // linkLegacyLogPath は旧パス (/tmp/bridge-<handle>.log) から新ログへの symlink を張る (段階 deprecation、
 // issue #54)。旧パスを glob する運用 script (roles-kaz operator/scripts/daily-cost.sh 等) と旧 doc を
 // 移行期間中も壊さないための互換で、1 minor 後に削除予定。
 //
-// 旧パスが「存在しない」か「既に symlink」のときだけ張り替える。regular file が存在する場合
-// (旧バイナリの spawn が残したログ、または他者が置いたファイル) は上書きせず warning のみ。
+// 旧パスの状態ごとの扱い:
+//   - 存在しない            → symlink を作成
+//   - 既に symlink          → Remove → Symlink で張り替え (symlink を辿った書き込みはしない)
+//   - 自分所有の regular file → 旧バイナリの spawn が残したログ。<legacy>.pre-migration に退避してから
+//     symlink を作成 (既存 install でも互換 symlink が張られるように。PR #71 review Critical 1)
+//   - 他者所有の regular file → 触らない (warning のみ)。/tmp は sticky bit なので Rename / Remove は
+//     いずれにせよ EPERM になる
+//
 // /tmp は world-writable なので他人の symlink を辿って書き込むことは一切しない: Lstat で種別を見て
-// symlink は Remove → Symlink (EEXIST で失敗したら warning)、ファイルには触らない。失敗は spawn を
-// 止めない (warning のみ)。
+// 判断し、失敗は spawn を止めない (warning のみ)。
 func linkLegacyLogPath(handle, logPath string) {
 	legacy := state.LegacyBridgeLogPath(legacyLogDir, handle)
 	if legacy == logPath {
+		// 保険。拡張子が .log / .out.log で常に異なるため現仕様では到達しない。
 		return
 	}
 	if fi, err := os.Lstat(legacy); err == nil {
 		if fi.Mode()&os.ModeSymlink == 0 {
-			fmt.Fprintf(os.Stderr, "warning: legacy log path %s exists and is not a symlink; leaving it untouched (new log: %s)\n", legacy, logPath)
-			return
-		}
-		if err := os.Remove(legacy); err != nil {
+			if !ownedBySelf(fi) {
+				fmt.Fprintf(os.Stderr, "warning: legacy log path %s exists and is not owned by us; leaving it untouched (new log: %s)\n", legacy, logPath)
+				return
+			}
+			backup := legacy + ".pre-migration"
+			if err := os.Rename(legacy, backup); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: cannot move legacy log %s aside: %v (new log: %s)\n", legacy, err, logPath)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "note: moved legacy log %s to %s\n", legacy, backup)
+		} else if err := os.Remove(legacy); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: cannot replace legacy log symlink %s: %v\n", legacy, err)
 			return
 		}
@@ -320,6 +334,13 @@ func linkLegacyLogPath(handle, logPath string) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "note: %s is deprecated and now a symlink to %s (will be removed in a future minor release)\n", legacy, logPath)
+}
+
+// ownedBySelf は fi のファイルが現在の uid 所有かを返す。uid が取れない環境 (non-unix) では false
+// (= 触らない側に倒す)。
+func ownedBySelf(fi os.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == uint32(os.Getuid())
 }
 
 // isLegacyLogPath は bridges.json に記録された log_path が旧固定パス形式かを返す。
