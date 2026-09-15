@@ -73,6 +73,8 @@ func runStatus(user string) error {
 	fmt.Printf("log:      %s\n", entry.LogPath)
 	fmt.Printf("started:  %s\n", entry.StartedAt)
 
+	warnLegacyLogPath(entry.Handle, entry.LogPath)
+
 	// 最後の数行のログを表示
 	if entry.LogPath != "" {
 		if tail, err := tailLog(entry.LogPath, 5); err == nil && len(tail) > 0 {

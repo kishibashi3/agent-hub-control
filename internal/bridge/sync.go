@@ -91,7 +91,10 @@ func runSync(dryRun bool) error {
 				fmt.Printf("would add orphan @%s (pid=%d, workdir=%s)\n", o.handle, o.pid, o.workdir)
 			} else {
 				fmt.Printf("adding orphan @%s (pid=%d, workdir=%s)\n", o.handle, o.pid, o.workdir)
-				logPath := fmt.Sprintf("/tmp/bridge-%s.log", o.handle)
+				logPath, err := resolveOrphanLogPath(o.handle)
+				if err != nil {
+					return fmt.Errorf("resolve log path for orphan @%s: %w", o.handle, err)
+				}
 				st.Bridges[o.handle] = &state.Entry{
 					Handle:     o.handle,
 					PID:        o.pid,
@@ -113,6 +116,32 @@ func runSync(dryRun bool) error {
 		return nil
 	}
 	return st.Save()
+}
+
+// resolveOrphanLogPath は sync が取り込む orphan の log_path を決める (issue #54)。
+// orphan は agenthubctl 以外 (旧バイナリ・手動起動) で spawn されている可能性があるので、
+// 新パスが存在すればそれ、無ければ旧 /tmp パスが regular file として存在すればそれ (deprecation
+// warning)、どちらも無ければ新パスを記録する (`bridge logs` は stat エラーで場所を明示する)。
+// 旧パスは Lstat で見て symlink なら採用しない (/tmp 上の他者 symlink を bridges.json に永続化して
+// `bridge logs` / `status` に他者の指すファイルを表示させない。spawn 側 linkLegacyLogPath と対称)。
+func resolveOrphanLogPath(handle string) (string, error) {
+	newPath, err := state.BridgeLogPath(handle)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		return newPath, nil
+	}
+	legacy := state.LegacyBridgeLogPath(legacyLogDir, handle)
+	if fi, err := os.Lstat(legacy); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintf(os.Stderr, "warning: @%s: ignoring deprecated log path %s because it is a symlink; recording %s\n", handle, legacy, newPath)
+			return newPath, nil
+		}
+		fmt.Fprintf(os.Stderr, "warning: @%s: adopting deprecated log path %s (restart the bridge to move it under AGENT_HUB_HOME/logs)\n", handle, legacy)
+		return legacy, nil
+	}
+	return newPath, nil
 }
 
 // findOrphanBridges は bridges.json に存在しない bridge-claude2 プロセスを返す。
@@ -141,6 +170,12 @@ func findOrphanBridges(st *state.State) ([]orphanEntry, error) {
 		handle, workdir, tenant, bridgeType, model := parseBridgeCmdline(args)
 		if handle == "" {
 			continue // --participant が見つからない
+		}
+		if !validHandle.MatchString(handle) {
+			// cmdline は他者プロセス由来なので検証する。不正な handle は log_path (AGENT_HUB_HOME/logs 配下) の
+			// パス要素になり、"bridge-../.." で logs 外を指しうる (PR #71 review Minor 3)。
+			fmt.Fprintf(os.Stderr, "warning: skipping orphan pid=%d: invalid handle %q\n", pid, handle)
+			continue
 		}
 
 		// すでに bridges.json に記録されているか確認

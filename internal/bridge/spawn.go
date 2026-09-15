@@ -154,7 +154,10 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 		tenant = os.Getenv("AGENT_HUB_TENANT")
 	}
 
-	logPath := fmt.Sprintf("/tmp/bridge-%s.log", participant)
+	logPath, err := state.BridgeLogPath(participant)
+	if err != nil {
+		return fmt.Errorf("resolve log path: %w", err)
+	}
 
 	// 既存プロセスチェック（ロック取得 → チェック → プロセス起動 → 保存 → 解放）
 	// ロックを保持したまま start + save まで完了させることで並列 spawn による JSON 破損を防ぐ。
@@ -178,13 +181,18 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", participant, pid, participant)
 	}
 
-	// ログファイルをクリア
+	// ログファイルをクリア (ディレクトリは state と同じ AGENT_HUB_HOME 配下、issue #54)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		unlock()
+		return fmt.Errorf("create log dir: %w", err)
+	}
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		unlock()
 		return fmt.Errorf("create log file: %w", err)
 	}
 	logFile.Close()
+	linkLegacyLogPath(participant, logPath)
 
 	// bridge 起動
 	args := []string{"--participant", participant, "--workdir", wd}
@@ -274,6 +282,78 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 
 	fmt.Printf("ok pid=%d\n", pid)
 	return nil
+}
+
+// legacyLogDir は旧固定ログパス /tmp/bridge-<handle>.log のディレクトリ。テストは t.TempDir() に
+// 差し替えて /tmp を汚さない (issue #54)。package var をテストが書き換えるため、bridge package の
+// テストに t.Parallel() を足してはいけない。
+var legacyLogDir = "/tmp"
+
+// linkLegacyLogPath は旧パス (/tmp/bridge-<handle>.log) から新ログへの symlink を張る (段階 deprecation、
+// issue #54)。旧パスを glob する運用 script (roles-kaz operator/scripts/daily-cost.sh 等) と旧 doc を
+// 移行期間中も壊さないための互換で、1 minor 後に削除予定。
+//
+// 旧パスの状態ごとの扱い:
+//   - 存在しない            → symlink を作成
+//   - 既に symlink          → Remove → Symlink で張り替え (symlink を辿った書き込みはしない)
+//   - 自分所有の regular file → 旧バイナリの spawn が残したログ。<legacy>.pre-migration に退避してから
+//     symlink を作成 (既存 install でも互換 symlink が張られるように。PR #71 review Critical 1)
+//   - 他者所有の regular file → 触らない (warning のみ)。/tmp は sticky bit なので Rename / Remove は
+//     いずれにせよ EPERM になる
+//
+// /tmp は world-writable なので他人の symlink を辿って書き込むことは一切しない: Lstat で種別を見て
+// 判断し、失敗は spawn を止めない (warning のみ)。
+func linkLegacyLogPath(handle, logPath string) {
+	legacy := state.LegacyBridgeLogPath(legacyLogDir, handle)
+	if legacy == logPath {
+		// 保険。拡張子が .log / .out.log で常に異なるため現仕様では到達しない。
+		return
+	}
+	if fi, err := os.Lstat(legacy); err == nil {
+		if fi.Mode()&os.ModeSymlink == 0 {
+			if !ownedBySelf(fi) {
+				fmt.Fprintf(os.Stderr, "warning: legacy log path %s exists and is not owned by us; leaving it untouched (new log: %s)\n", legacy, logPath)
+				return
+			}
+			backup := legacy + ".pre-migration"
+			if err := os.Rename(legacy, backup); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: cannot move legacy log %s aside: %v (new log: %s)\n", legacy, err, logPath)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "note: moved legacy log %s to %s\n", legacy, backup)
+		} else if err := os.Remove(legacy); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: cannot replace legacy log symlink %s: %v\n", legacy, err)
+			return
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "warning: cannot inspect legacy log path %s: %v\n", legacy, err)
+		return
+	}
+	if err := os.Symlink(logPath, legacy); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot create legacy log symlink %s: %v\n", legacy, err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "note: %s is deprecated and now a symlink to %s (will be removed in a future minor release)\n", legacy, logPath)
+}
+
+// ownedBySelf は fi のファイルが現在の uid 所有かを返す。uid が取れない環境 (non-unix) では false
+// (= 触らない側に倒す)。
+func ownedBySelf(fi os.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == uint32(os.Getuid())
+}
+
+// isLegacyLogPath は bridges.json に記録された log_path が旧固定パス形式かを返す。
+func isLegacyLogPath(handle, logPath string) bool {
+	return logPath != "" && logPath == state.LegacyBridgeLogPath(legacyLogDir, handle)
+}
+
+// warnLegacyLogPath は entry の log_path が旧パスなら deprecation warning を出す (issue #54)。
+// 旧バイナリで spawn された entry は次回 spawn / restart まで旧パスを指し続ける。
+func warnLegacyLogPath(handle, logPath string) {
+	if isLegacyLogPath(handle, logPath) {
+		fmt.Fprintf(os.Stderr, "warning: @%s log_path %s is the deprecated /tmp location; restart the bridge to move it under AGENT_HUB_HOME/logs\n", handle, logPath)
+	}
 }
 
 // resolveBinary は bridgeType に対応するバイナリのパスを解決する。

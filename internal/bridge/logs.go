@@ -47,6 +47,7 @@ func runLogs(handle string, follow bool) error {
 		return fmt.Errorf("@%s has no log_path recorded", handle)
 	}
 
+	warnLegacyLogPath(entry.Handle, entry.LogPath)
 	if _, err := os.Stat(entry.LogPath); err != nil {
 		return fmt.Errorf("log file %q: %w", entry.LogPath, err)
 	}
