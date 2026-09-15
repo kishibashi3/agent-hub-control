@@ -268,6 +268,7 @@ func (c *Config) statusSystemd() error {
 	fmt.Printf("service:   %s%s\n", svcPath, existsMark(svcPath))
 	fmt.Printf("timer:     %s%s\n", tmrPath, existsMark(tmrPath))
 	fmt.Printf("env file:  %s%s\n", c.EnvFile, existsMark(c.EnvFile))
+	printEnvFilePermWarning(c.EnvFile)
 	fmt.Println()
 	fmt.Printf("timer is-enabled: %s\n", c.systemctlQuery("is-enabled", serviceName+".timer"))
 	fmt.Printf("timer is-active:  %s\n", c.systemctlQuery("is-active", serviceName+".timer"))
@@ -285,7 +286,11 @@ func (c *Config) statusSystemd() error {
 // install targeting another user, ownership is handed to that user.
 func (c *Config) writeEnvScaffold(content string) error {
 	if _, err := os.Stat(c.EnvFile); err == nil {
-		return nil // already present — leave user secrets untouched
+		// already present — leave user secrets untouched, but surface a loose mode (issue #51)
+		if w := envFilePermWarning(c.EnvFile); w != "" {
+			fmt.Fprintln(os.Stderr, w)
+		}
+		return nil
 	}
 	dir := filepath.Dir(c.EnvFile)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -299,6 +304,32 @@ func (c *Config) writeEnvScaffold(content string) error {
 		_ = os.Chown(c.EnvFile, c.UID, c.GID)
 	}
 	return nil
+}
+
+// envFilePermWarning returns a warning when an existing env file — which holds GITHUB_PAT and
+// other secrets — is readable by group or other; "" when the file is absent or its mode has
+// no group/other bits (0600, 0400, ...). install only creates the scaffold with 0600 and never
+// touches a pre-existing file, so a hand-made 0644 env would otherwise be used silently
+// (issue #51). This deliberately does not chmod: the file may be shared on purpose, so the
+// operator decides.
+func envFilePermWarning(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	perm := fi.Mode().Perm()
+	if perm&0o077 == 0 {
+		return ""
+	}
+	return fmt.Sprintf("warning: %s is mode %04o (readable by group/other) but holds secrets (GITHUB_PAT, ...).\n"+
+		"  Tighten it with: chmod 600 %s", path, perm, path)
+}
+
+// printEnvFilePermWarning writes envFilePermWarning to stdout for status output.
+func printEnvFilePermWarning(path string) {
+	if w := envFilePermWarning(path); w != "" {
+		fmt.Println(w)
+	}
 }
 
 func (c *Config) runSystemctl(args ...string) error {
