@@ -1,9 +1,11 @@
 package state_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +77,31 @@ func bridgeArgvMatches(pid int, handle string) bool {
 	return err == nil && state.LooksLikeBridgeProcess(argv, handle)
 }
 
+// procState は /proc/<pid>/stat の state 欄 (R/S/D/Z/T...) を返す。comm は括弧付きで空白や ')' を
+// 含みうるので、最後の ')' の後から読む。
+func procState(t *testing.T, pid int) string {
+	t.Helper()
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return ""
+	}
+	s := string(data)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return ""
+	}
+	fields := strings.Fields(s[i+1:])
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func isZombie(t *testing.T, pid int) bool {
+	t.Helper()
+	return procState(t, pid) == "Z"
+}
+
 func mustArgv(pid int) []string {
 	argv, _ := state.ReadCmdline(pid)
 	return argv
@@ -93,11 +120,14 @@ func TestIsRunningZombiePID(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 	t.Cleanup(func() { _ = cmd.Wait() })
-	// zombie 化 (cmdline が空になる) を待つ。
+	// zombie 化を /proc/<pid>/stat の state 欄 ('Z') で待つ。cmdline が空になるのを待つと、
+	// exec 直後の一瞬 (新 mm の arg_start/arg_end 設定前) にも cmdline が空に見えるため
+	// 「まだ生きている sh」を zombie と誤認してループを抜け、IsRunning が真の argv を読んで
+	// true を返す flake になる (issue #63)。
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if argv, err := state.ReadCmdline(pid); err == nil && len(argv) == 0 {
-			break
+	for !isZombie(t, pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d did not become zombie within 2s (stat state %q)", pid, procState(t, pid))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
