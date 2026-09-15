@@ -247,6 +247,7 @@ func TestCrossScopeGuardAbortsWithoutForce(t *testing.T) {
 func TestCrossScopeGuardForceRemovesOtherScope(t *testing.T) {
 	home := t.TempDir()
 	tmr := seedUserScopeTimer(t, home)
+	calls := resetSystemctlCalls(t)
 
 	c := &Config{
 		Scope: ScopeSystem, Home: home, Force: true,
@@ -257,6 +258,12 @@ func TestCrossScopeGuardForceRemovesOtherScope(t *testing.T) {
 	}
 	if _, statErr := os.Stat(tmr); !os.IsNotExist(statErr) {
 		t.Errorf("--force did not remove the orphan timer %s (err=%v)", tmr, statErr)
+	}
+	// The teardown must target the *user* scope (issue #55 recorder: intent is asserted, the
+	// real binary is never reached).
+	want := "--user disable --now " + serviceName + ".timer"
+	if got := calls(); !strings.Contains(strings.Join(got, "\n"), want) {
+		t.Errorf("expected recorded systemctl call %q, got %q", want, got)
 	}
 }
 
@@ -355,6 +362,7 @@ func TestCrossScopeGuardUserScopeSystemOrphanForceNonRootWarns(t *testing.T) {
 // uninstallSystemd are best-effort/quiet, so this runs where systemd is absent too.
 func TestCrossScopeGuardUserScopeSystemOrphanForceRootRemoves(t *testing.T) {
 	c, svc, tmr := seedSystemScopeUnits(t)
+	calls := resetSystemctlCalls(t)
 	c.Force = true
 	c.euidOverride = func() int { return 0 }
 	if err := c.crossScopeGuard(); err != nil {
@@ -364,5 +372,13 @@ func TestCrossScopeGuardUserScopeSystemOrphanForceRootRemoves(t *testing.T) {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("--force as root did not remove %s (err=%v)", p, err)
 		}
+	}
+	got := calls()
+	joined := strings.Join(got, "\n")
+	if want := "disable --now " + serviceName + ".timer"; !strings.Contains(joined, want) {
+		t.Errorf("expected recorded systemctl call %q, got %q", want, got)
+	}
+	if strings.Contains(joined, "--user") {
+		t.Errorf("system-scope teardown must not pass --user, got %q", got)
 	}
 }
