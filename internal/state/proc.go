@@ -81,7 +81,9 @@ func ReadExe(pid int) (string, error) {
 // LooksLikeBridgeExe は /proc/<pid>/exe の basename が bridge バイナリの命名不変条件
 // ("bridge-" prefix) を満たすかを返す。argv[0] は prctl(PR_SET_NAME) や `exec -a` で偽装できるが、
 // exe は kernel が実際に実行しているファイルを指すため偽装できない (issue #50)。
-// resolveBinary (spawn 時) が同じ不変条件を強制するので、本物の bridge は必ず満たす。
+// spawn 時の checkBridgeBinaryName が「与えられたパス」と「symlink 解決後の実体」の両方に同じ
+// 不変条件を強制するので、agenthubctl が spawn した ELF bridge は必ず満たす。shebang wrapper は
+// exe が interpreter になるため満たさない (既知の制約、PR #66)。
 func LooksLikeBridgeExe(exe string) bool {
 	return strings.HasPrefix(filepath.Base(exe), "bridge-")
 }

@@ -63,13 +63,17 @@ func TestSpawnBridgeArgs(t *testing.T) {
 		t.Fatalf("testdata/fake-bridge-args.sh not found: %v", err)
 	}
 
-	// resolveBinary は basename の "bridge-" prefix を要求する (issue #50) ので、その名前の
-	// symlink 経由で fake script を指す。
-	binLink := filepath.Join(t.TempDir(), "bridge-claude2")
-	if err := os.Symlink(scriptPath, binLink); err != nil {
-		t.Fatalf("symlink fake bridge: %v", err)
+	// resolveBinary は「与えられたパス」と「symlink 解決後の実体」両方の basename に "bridge-" prefix を
+	// 要求する (issue #50) ので、symlink ではなく fake script を bridge-claude2 という名前で copy する。
+	binCopy := filepath.Join(t.TempDir(), "bridge-claude2")
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read fake bridge: %v", err)
 	}
-	t.Setenv("AGENT_HUB_BRIDGE_CLAUDE2_BIN", binLink)
+	if err := os.WriteFile(binCopy, script, 0o755); err != nil {
+		t.Fatalf("copy fake bridge: %v", err)
+	}
+	t.Setenv("AGENT_HUB_BRIDGE_CLAUDE2_BIN", binCopy)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("AGENT_HUB_HOME", t.TempDir()) // 実 state (~/.agent-hub/state/bridges.json) を汚さない (issue #49)
 
@@ -307,6 +311,39 @@ func TestResolveBinaryRejectsNonBridgeBasename(t *testing.T) {
 		got, err := resolveBinary("bridge-claude2")
 		if err != nil || got != good {
 			t.Errorf("resolveBinary = (%q, %v), want (%q, nil)", got, err, good)
+		}
+	})
+
+	// /proc/<pid>/exe は symlink 解決後の実体を指すので、bridge-* という名前の symlink が
+	// 非 bridge- 実体を指す配置は spawn 時に弾く (review Minor 1)。逆に実体も bridge-* なら受理する。
+	linkDir := t.TempDir()
+	badLink := filepath.Join(linkDir, "bridge-codex2")
+	if err := os.Symlink(bad, badLink); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	goodLink := filepath.Join(linkDir, "bridge-codex2-alias")
+	if err := os.Symlink(good, goodLink); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	t.Run("env var symlink named bridge-* to a non-bridge target is rejected", func(t *testing.T) {
+		t.Setenv("AGENT_HUB_BRIDGE_CODEX2_BIN", badLink)
+		_, err := resolveBinary("bridge-codex2")
+		if err == nil || !strings.Contains(err.Error(), "symlink target") {
+			t.Errorf("expected symlink target rejection, got %v", err)
+		}
+	})
+	t.Run("env var symlink to a bridge-* target is accepted and keeps the given path", func(t *testing.T) {
+		t.Setenv("AGENT_HUB_BRIDGE_CODEX2_BIN", goodLink)
+		got, err := resolveBinary("bridge-codex2")
+		if err != nil || got != goodLink {
+			t.Errorf("resolveBinary = (%q, %v), want (%q, nil)", got, err, goodLink)
+		}
+	})
+	t.Run("PATH symlink named bridge-* to a non-bridge target is rejected", func(t *testing.T) {
+		t.Setenv("AGENT_HUB_BRIDGE_CODEX2_BIN", "")
+		t.Setenv("PATH", linkDir)
+		if _, err := resolveBinary("bridge-codex2"); err == nil || !strings.Contains(err.Error(), "symlink target") {
+			t.Errorf("expected symlink target rejection, got %v", err)
 		}
 	})
 }
