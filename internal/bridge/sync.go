@@ -91,7 +91,7 @@ func runSync(dryRun bool) error {
 				fmt.Printf("would add orphan @%s (pid=%d, workdir=%s)\n", o.handle, o.pid, o.workdir)
 			} else {
 				fmt.Printf("adding orphan @%s (pid=%d, workdir=%s)\n", o.handle, o.pid, o.workdir)
-				logPath := fmt.Sprintf("/tmp/bridge-%s.log", o.handle)
+				logPath := resolveOrphanLogPath(o.handle)
 				st.Bridges[o.handle] = &state.Entry{
 					Handle:     o.handle,
 					PID:        o.pid,
@@ -113,6 +113,28 @@ func runSync(dryRun bool) error {
 		return nil
 	}
 	return st.Save()
+}
+
+// resolveOrphanLogPath は sync が取り込む orphan の log_path を決める (issue #54)。
+// orphan は agenthubctl 以外 (旧バイナリ・手動起動) で spawn されている可能性があるので、
+// 新パスが存在すればそれ、無ければ旧 /tmp パスが存在すればそれ (deprecation warning)、どちらも
+// 無ければ新パスを記録する (`bridge logs` は stat エラーで場所を明示する)。
+func resolveOrphanLogPath(handle string) string {
+	newPath, err := state.BridgeLogPath(handle)
+	if err != nil {
+		newPath = ""
+	}
+	if newPath != "" {
+		if _, err := os.Stat(newPath); err == nil {
+			return newPath
+		}
+	}
+	legacy := state.LegacyBridgeLogPath(legacyLogDir, handle)
+	if _, err := os.Stat(legacy); err == nil {
+		fmt.Fprintf(os.Stderr, "warning: @%s: adopting deprecated log path %s (restart the bridge to move it under AGENT_HUB_HOME/logs)\n", handle, legacy)
+		return legacy
+	}
+	return newPath
 }
 
 // findOrphanBridges は bridges.json に存在しない bridge-claude2 プロセスを返す。

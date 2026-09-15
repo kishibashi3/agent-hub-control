@@ -78,14 +78,11 @@ type State struct {
 }
 
 func stateDir() (string, error) {
-	if base := os.Getenv("AGENT_HUB_HOME"); base != "" {
-		return filepath.Join(base, "state"), nil
-	}
-	dir, err := os.UserHomeDir()
+	base, err := homeDir()
 	if err != nil {
-		return "", fmt.Errorf("home dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(dir, ".agent-hub", "state"), nil
+	return filepath.Join(base, "state"), nil
 }
 
 func statePath() (string, error) {

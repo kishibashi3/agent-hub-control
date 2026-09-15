@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"bufio"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,19 +76,27 @@ func TestSpawnBridgeArgs(t *testing.T) {
 	}
 	t.Setenv("AGENT_HUB_BRIDGE_CLAUDE2_BIN", binCopy)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("AGENT_HUB_HOME", t.TempDir()) // 実 state (~/.agent-hub/state/bridges.json) を汚さない (issue #49)
+	t.Setenv("AGENT_HUB_HOME", t.TempDir()) // 実 state (~/.agent-hub/state/bridges.json) と logs を汚さない (issue #49 / #54)
+	legacyDir := t.TempDir()
+	prevLegacy := legacyLogDir
+	legacyLogDir = legacyDir // 互換 symlink も /tmp ではなく tempdir に (issue #54)
+	t.Cleanup(func() { legacyLogDir = prevLegacy })
 
 	workdir := t.TempDir()
 	const handle = "__test_spawn_args__"
-	logPath := fmt.Sprintf("/tmp/bridge-%s.log", handle)
+	logPath, err := state.BridgeLogPath(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(logPath, os.Getenv("AGENT_HUB_HOME")) {
+		t.Fatalf("log path %q is not under AGENT_HUB_HOME (issue #54)", logPath)
+	}
 
 	// 前回テストのゴミプロセスをクリーンアップしてから開始
 	pkillHandle(handle)
-	os.Remove(logPath)
 
 	t.Cleanup(func() {
 		pkillHandle(handle)
-		os.Remove(logPath)
 	})
 
 	// run spawn in background and wait briefly; it succeeds when "registered and listening" is found
@@ -145,6 +152,84 @@ func TestSpawnBridgeArgs(t *testing.T) {
 	}
 	if e := st.Get(handle); e == nil || e.Model != "test-model-x" || e.ModelSource != modelSourceFlag {
 		t.Errorf("state entry = %+v, want Model=test-model-x ModelSource=flag", e)
+	}
+	// log_path は新パスを記録し、旧パスには新パスへの symlink が張られる (段階 deprecation、issue #54)。
+	if e := st.Get(handle); e != nil && e.LogPath != logPath {
+		t.Errorf("state log_path = %q, want %q", e.LogPath, logPath)
+	}
+	legacy := state.LegacyBridgeLogPath(legacyDir, handle)
+	if target, err := os.Readlink(legacy); err != nil || target != logPath {
+		t.Errorf("legacy symlink %s -> (%q, %v), want -> %q", legacy, target, err, logPath)
+	}
+}
+
+// TestLinkLegacyLogPath: 互換 symlink の張り方 (issue #54)。存在しない → 作成、既存 symlink → 張り替え、
+// regular file → 触らない (旧バイナリのログや他者のファイルを壊さない・辿らない)。
+func TestLinkLegacyLogPath(t *testing.T) {
+	dir := t.TempDir()
+	prev := legacyLogDir
+	legacyLogDir = dir
+	t.Cleanup(func() { legacyLogDir = prev })
+
+	newLog := filepath.Join(t.TempDir(), "bridge-h.out.log")
+	legacy := state.LegacyBridgeLogPath(dir, "h")
+
+	linkLegacyLogPath("h", newLog)
+	if target, err := os.Readlink(legacy); err != nil || target != newLog {
+		t.Fatalf("fresh: readlink = (%q, %v), want %q", target, err, newLog)
+	}
+
+	otherLog := filepath.Join(t.TempDir(), "bridge-h.out.log")
+	linkLegacyLogPath("h", otherLog)
+	if target, err := os.Readlink(legacy); err != nil || target != otherLog {
+		t.Fatalf("relink: readlink = (%q, %v), want %q", target, err, otherLog)
+	}
+
+	os.Remove(legacy)
+	if err := os.WriteFile(legacy, []byte("old binary log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkLegacyLogPath("h", newLog)
+	fi, err := os.Lstat(legacy)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("regular file must be left untouched: %v mode=%v", err, fi.Mode())
+	}
+	if data, _ := os.ReadFile(legacy); string(data) != "old binary log\n" {
+		t.Fatalf("regular file content changed: %q", data)
+	}
+}
+
+// TestResolveOrphanLogPath: sync が orphan に記録する log_path の解決順 (issue #54)。
+func TestResolveOrphanLogPath(t *testing.T) {
+	t.Setenv("AGENT_HUB_HOME", t.TempDir())
+	dir := t.TempDir()
+	prev := legacyLogDir
+	legacyLogDir = dir
+	t.Cleanup(func() { legacyLogDir = prev })
+
+	newPath, err := state.BridgeLogPath("h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := state.LegacyBridgeLogPath(dir, "h")
+
+	if got := resolveOrphanLogPath("h"); got != newPath {
+		t.Errorf("neither exists: got %q, want new path %q", got, newPath)
+	}
+	if err := os.WriteFile(legacy, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveOrphanLogPath("h"); got != legacy {
+		t.Errorf("only legacy exists: got %q, want %q", got, legacy)
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveOrphanLogPath("h"); got != newPath {
+		t.Errorf("both exist: got %q, want new path %q", got, newPath)
 	}
 }
 

@@ -78,7 +78,7 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 | `bridge status [handle]` | 状態表示（`status <handle>` は `model: <id> (source: flag\|config\|state\|cmdline)`） |
 | `bridge sync [--dry-run]` | state と実プロセスを整合 |
 | `bridge prune [--dry-run]` | dead エントリ削除 |
-| `bridge logs [-f] <handle>` | ログ表示 |
+| `bridge logs [-f] <handle>` | ログ表示（agenthubctl が接続した stdout/stderr。既定 `$AGENT_HUB_HOME/logs/bridge-<handle>.out.log`、`AGENT_HUB_BRIDGE_LOG_DIR` で上書き可。旧 `/tmp/bridge-<handle>.log` は移行期間中 symlink で参照可、将来の minor で削除） |
 | `bridge config set/get/list` | spawn 引数の保存（`--workdir` / `--tenant` / `--type` / `--display-name` / `--model`） |
 | `fleet install [--system\|--user] [--dry-run]` | 起動時＋定期で `bridge start --all` する boot-start + watchdog を導入 |
 | `fleet uninstall` | boot-start + watchdog を撤去（env ファイルは残す） |
