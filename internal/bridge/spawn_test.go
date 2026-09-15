@@ -67,6 +67,7 @@ func TestSpawnBridgeArgs(t *testing.T) {
 
 	t.Setenv("AGENT_HUB_BRIDGE_CLAUDE2_BIN", scriptPath)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("AGENT_HUB_HOME", t.TempDir()) // 実 state (~/.agent-hub/state/bridges.json) を汚さない (issue #49)
 
 	workdir := t.TempDir()
 	const handle = "__test_spawn_args__"
