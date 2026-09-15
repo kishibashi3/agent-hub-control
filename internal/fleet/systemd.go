@@ -17,13 +17,32 @@ func (c *Config) systemdUnitDir() string { return c.systemdUnitDirFor(c.Scope) }
 // — the scope-change orphan case from issue #42.
 func (c *Config) systemdUnitDirFor(scope Scope) string {
 	if scope == ScopeSystem {
-		return "/etc/systemd/system"
+		return c.systemUnitDir()
 	}
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		base = filepath.Join(c.Home, ".config")
 	}
 	return filepath.Join(base, "systemd", "user")
+}
+
+// systemUnitDir is the system-scope unit dir. Tests override it (unexported field) so the
+// cross-scope orphan probe hits a tempdir instead of the host's real /etc/systemd/system —
+// otherwise the guard tests silently skip on any CI runner without a real install (issue #52).
+func (c *Config) systemUnitDir() string {
+	if c.systemUnitDirOverride != "" {
+		return c.systemUnitDirOverride
+	}
+	return "/etc/systemd/system"
+}
+
+// geteuid returns the effective uid, or the test override (issue #52) so both the root and
+// non-root branches of the --force cross-scope guard can be exercised on one host.
+func (c *Config) geteuid() int {
+	if c.euidOverride != nil {
+		return c.euidOverride()
+	}
+	return os.Geteuid()
 }
 
 // otherScope is the scope opposite to c.Scope.
@@ -89,7 +108,7 @@ func (c *Config) crossScopeGuard() error {
 	// sudo. Rather than blocking the (sudo-less) user watchdog behind a privileged step, --force
 	// proceeds and prints the exact cleanup command so the operator can retire the system-scope
 	// timer when they next have root (issue #47: the system unit was the one silently failing).
-	if cannotRemoveScopeUnprivileged(other) {
+	if c.cannotRemoveScopeUnprivileged(other) {
 		fmt.Fprintf(os.Stderr,
 			"warning: --force cannot remove the %s-scope install without root (%s).\n"+
 				"  Proceeding with the %s-scope install anyway; until you remove the old units two\n"+
@@ -108,8 +127,8 @@ func (c *Config) crossScopeGuard() error {
 
 // cannotRemoveScopeUnprivileged reports whether --force is unable to tear down an install in
 // the given scope from the current process: /etc/systemd/system units need root (issue #47).
-func cannotRemoveScopeUnprivileged(scope Scope) bool {
-	return scope == ScopeSystem && os.Geteuid() != 0
+func (c *Config) cannotRemoveScopeUnprivileged(scope Scope) bool {
+	return scope == ScopeSystem && c.geteuid() != 0
 }
 
 // systemctlArgs prefixes --user for user-scope invocations.
@@ -147,7 +166,7 @@ func (c *Config) installSystemd(dryRun bool) error {
 			if c.Force {
 				note = fmt.Sprintf("NOTE: --force will first run `%s` to remove the %s-scope install (%s)",
 					uninstallHint(other), other, strings.Join(orphans, ", "))
-				if cannotRemoveScopeUnprivileged(other) {
+				if c.cannotRemoveScopeUnprivileged(other) {
 					note = fmt.Sprintf("NOTE: --force cannot remove the %s-scope install without root (%s) — "+
 						"install would PROCEED with a warning; retire it later with: %s",
 						other, strings.Join(orphans, ", "), uninstallHint(other))

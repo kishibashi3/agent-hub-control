@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -215,26 +216,81 @@ func TestResolveBakesAbsoluteBinaryAndDefaults(t *testing.T) {
 	}
 }
 
-// TestCrossScopeGuardUserScopeSystemOrphanNonRoot: a non-root user-scope install that finds a
-// system-scope orphan cannot remove it (no sudo). Without --force it still aborts; with --force
-// it proceeds (warning only) so the sudo-less user watchdog is not blocked behind root
-// (issue #47). Probing the real /etc/systemd/system is unavoidable here, so the test only runs
-// when that orphan actually exists on the host; otherwise the guard is a trivial no-op.
-func TestCrossScopeGuardUserScopeSystemOrphanNonRoot(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("non-root only")
+// seedSystemScopeUnits writes fake agent-hub-fleet.{service,timer} into a tempdir that stands
+// in for /etc/systemd/system, and returns a user-scope Config whose opposite-scope probe points
+// at it (issue #52). No real /etc access, no root, no skip.
+func seedSystemScopeUnits(t *testing.T) (c *Config, svc, tmr string) {
+	t.Helper()
+	fakeEtc := t.TempDir()
+	for _, name := range []string{serviceName + ".service", serviceName + ".timer"} {
+		if err := os.WriteFile(filepath.Join(fakeEtc, name), []byte("[Unit]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	c := &Config{Scope: ScopeUser, Home: t.TempDir()}
 	t.Setenv("XDG_CONFIG_HOME", "")
-	if len(c.otherScopeSystemdUnits()) == 0 {
-		t.Skip("no system-scope agent-hub-fleet units on this host")
+	c = &Config{
+		Scope:                 ScopeUser,
+		Home:                  t.TempDir(),
+		EnvFile:               filepath.Join(fakeEtc, "fleet.env"),
+		systemUnitDirOverride: fakeEtc,
 	}
-	c.Force = false
-	if err := c.crossScopeGuard(); err == nil {
-		t.Fatal("expected abort without --force when a system-scope orphan exists")
+	return c, filepath.Join(fakeEtc, serviceName+".service"), filepath.Join(fakeEtc, serviceName+".timer")
+}
+
+func mustExist(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, p := range paths {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s should be untouched: %v", p, err)
+		}
 	}
+}
+
+// TestCrossScopeGuardUserScopeSystemOrphanAborts: a user-scope install that finds a
+// system-scope orphan aborts without --force, regardless of privilege, and leaves the
+// orphan files in place.
+func TestCrossScopeGuardUserScopeSystemOrphanAborts(t *testing.T) {
+	for _, euid := range []int{0, 1000} {
+		c, svc, tmr := seedSystemScopeUnits(t)
+		c.Force = false
+		c.euidOverride = func() int { return euid }
+		err := c.crossScopeGuard()
+		if err == nil {
+			t.Fatalf("euid=%d: expected abort without --force when a system-scope orphan exists", euid)
+		}
+		if !strings.Contains(err.Error(), uninstallHint(ScopeSystem)) {
+			t.Errorf("euid=%d: abort message should carry the removal hint %q, got: %v", euid, uninstallHint(ScopeSystem), err)
+		}
+		mustExist(t, svc, tmr)
+	}
+}
+
+// TestCrossScopeGuardUserScopeSystemOrphanForceNonRootWarns: --force as non-root cannot remove
+// /etc units, so the guard proceeds (nil) with a warning and the orphan is left untouched
+// (issue #47: the sudo-less user watchdog must not be blocked behind root).
+func TestCrossScopeGuardUserScopeSystemOrphanForceNonRootWarns(t *testing.T) {
+	c, svc, tmr := seedSystemScopeUnits(t)
 	c.Force = true
+	c.euidOverride = func() int { return 1000 }
 	if err := c.crossScopeGuard(); err != nil {
 		t.Fatalf("--force as non-root should proceed with a warning, got: %v", err)
+	}
+	mustExist(t, svc, tmr)
+}
+
+// TestCrossScopeGuardUserScopeSystemOrphanForceRootRemoves: --force as root tears down the
+// system-scope orphan before the user-scope install proceeds. systemctl calls inside
+// uninstallSystemd are best-effort/quiet, so this runs where systemd is absent too.
+func TestCrossScopeGuardUserScopeSystemOrphanForceRootRemoves(t *testing.T) {
+	c, svc, tmr := seedSystemScopeUnits(t)
+	c.Force = true
+	c.euidOverride = func() int { return 0 }
+	if err := c.crossScopeGuard(); err != nil {
+		t.Fatalf("--force as root should remove the orphan and proceed, got: %v", err)
+	}
+	for _, p := range []string{svc, tmr} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("--force as root did not remove %s (err=%v)", p, err)
+		}
 	}
 }

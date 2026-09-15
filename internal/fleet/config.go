@@ -67,6 +67,11 @@ type Config struct {
 	ActiveSec int
 	Interval  int
 	Force     bool // if a different-scope install exists, tear it down instead of aborting
+
+	// Test-only injection points (issue #52). Zero values mean "real host": probe
+	// /etc/systemd/system and use os.Geteuid().
+	systemUnitDirOverride string
+	euidOverride          func() int
 }
 
 // ResolveOptions carries the install flags that influence resolution.
