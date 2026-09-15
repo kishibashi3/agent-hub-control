@@ -66,3 +66,45 @@ func LooksLikeBridgeProcess(argv []string, handle string) bool {
 	}
 	return false
 }
+
+// ReadExe は /proc/<pid>/exe の readlink 結果 (実行中バイナリの実パス) を返す。
+// バイナリが実行中に置き換え・削除されると kernel は " (deleted)" を付けるので取り除く。
+// 別 uid のプロセス (EACCES) / 消滅 (ENOENT) / procfs 非対応では error を返す。
+func ReadExe(pid int) (string, error) {
+	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(exe, " (deleted)"), nil
+}
+
+// LooksLikeBridgeExe は /proc/<pid>/exe の basename が bridge バイナリの命名不変条件
+// ("bridge-" prefix) を満たすかを返す。argv[0] は prctl(PR_SET_NAME) や `exec -a` で偽装できるが、
+// exe は kernel が実際に実行しているファイルを指すため偽装できない (issue #50)。
+// resolveBinary (spawn 時) が同じ不変条件を強制するので、本物の bridge は必ず満たす。
+func LooksLikeBridgeExe(exe string) bool {
+	return strings.HasPrefix(filepath.Base(exe), "bridge-")
+}
+
+// IsBridgeProcess は PID が指定 handle の本物の bridge プロセスかを /proc で判定する。
+//
+//  1. argv (/proc/<pid>/cmdline) が LooksLikeBridgeProcess を満たすこと
+//  2. exe (/proc/<pid>/exe) が読めるなら、その basename も "bridge-" prefix を持つこと
+//
+// exe が読めない (別 uid の bridge を root 以外から見た場合、非 Linux 等) ときは argv 判定のみに
+// フォールバックする — 誤って false に倒すと稼働中 bridge が dead 扱いになり watchdog が
+// 重複 spawn するため。cmdline 自体が読めないときは error を返し、呼び出し側が
+// 従来のフォールバック (comm 突合など) を選べるようにする。
+func IsBridgeProcess(pid int, handle string) (bool, error) {
+	argv, err := ReadCmdline(pid)
+	if err != nil {
+		return false, err
+	}
+	if !LooksLikeBridgeProcess(argv, handle) {
+		return false, nil
+	}
+	if exe, err := ReadExe(pid); err == nil && !LooksLikeBridgeExe(exe) {
+		return false, nil
+	}
+	return true, nil
+}

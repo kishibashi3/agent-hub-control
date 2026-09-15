@@ -44,10 +44,11 @@ func (e *Entry) IsRunning() bool {
 	}
 	// 実プロセス突合: PID は生きているが、それがこの handle の bridge でなければ幽霊 (issue #47)。
 	// Linux では /proc/<pid>/cmdline が正本。読めた以上は argv が空 (zombie) でも「bridge ではない」
-	// として false に倒す。読めない (kill 直後の消滅など) 場合だけ下の comm フォールバックへ。
+	// として false に倒す。argv が通っても /proc/<pid>/exe が bridge バイナリでなければ偽装
+	// (issue #50)。cmdline が読めない (kill 直後の消滅など) 場合だけ下の comm フォールバックへ。
 	if runtime.GOOS == "linux" {
-		if argv, err := ReadCmdline(e.PID); err == nil {
-			return LooksLikeBridgeProcess(argv, e.Handle)
+		if ok, err := IsBridgeProcess(e.PID, e.Handle); err == nil {
+			return ok
 		}
 	}
 	// /proc/cmdline が使えない環境: PID reuse guard として bridge type が記録されていれば
