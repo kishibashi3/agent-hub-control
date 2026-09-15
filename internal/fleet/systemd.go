@@ -274,10 +274,7 @@ func (c *Config) statusSystemd() error {
 	fmt.Printf("timer is-active:  %s\n", c.systemctlQuery("is-active", serviceName+".timer"))
 	fmt.Println()
 
-	cmd := exec.Command("systemctl", c.systemctlArgs("list-timers", serviceName+".timer", "--no-pager")...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	_, _ = execSystemctl(c.systemctlArgs("list-timers", serviceName+".timer", "--no-pager"), true)
 	return nil
 }
 
@@ -332,23 +329,41 @@ func printEnvFilePermWarning(path string) {
 	}
 }
 
+// execSystemctl is the single seam through which this package runs the systemctl binary.
+// systemctl resolves units by *name*, so tempdir-isolated unit files do not isolate it: a
+// test that reached the real binary once ran `systemctl --user disable --now
+// agent-hub-fleet.timer` against the live watchdog (issue #55). Tests replace this with a
+// recorder in TestMain; production keeps the real exec.
+//
+// passthrough=true streams the child's stdout/stderr to ours (interactive install/status);
+// false captures stdout and returns it (queries and best-effort teardown).
+var execSystemctl = realSystemctl
+
+func realSystemctl(args []string, passthrough bool) ([]byte, error) {
+	cmd := exec.Command("systemctl", args...)
+	if passthrough {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return nil, cmd.Run()
+	}
+	return cmd.Output()
+}
+
 func (c *Config) runSystemctl(args ...string) error {
 	full := c.systemctlArgs(args...)
-	cmd := exec.Command("systemctl", full...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if _, err := execSystemctl(full, true); err != nil {
 		return fmt.Errorf("systemctl %s: %w", strings.Join(full, " "), err)
 	}
 	return nil
 }
 
 func (c *Config) runSystemctlQuiet(args ...string) error {
-	return exec.Command("systemctl", c.systemctlArgs(args...)...).Run()
+	_, err := execSystemctl(c.systemctlArgs(args...), false)
+	return err
 }
 
 func (c *Config) systemctlQuery(args ...string) string {
-	out, _ := exec.Command("systemctl", c.systemctlArgs(args...)...).Output()
+	out, _ := execSystemctl(c.systemctlArgs(args...), false)
 	s := strings.TrimSpace(string(out))
 	if s == "" {
 		return "unknown"
