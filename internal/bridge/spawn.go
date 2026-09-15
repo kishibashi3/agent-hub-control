@@ -3,6 +3,7 @@ package bridge
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -244,6 +245,9 @@ func resolveBinary(bridgeType string) (string, error) {
 		if _, err := os.Stat(binEnv); err != nil {
 			return "", fmt.Errorf("%s=%q not found: %w", envVar, binEnv, err)
 		}
+		if err := checkBridgeBinaryName(binEnv); err != nil {
+			return "", fmt.Errorf("%s=%q: %w", envVar, binEnv, err)
+		}
 		return binEnv, nil
 	}
 
@@ -251,8 +255,38 @@ func resolveBinary(bridgeType string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s not found in PATH. Set %s or add %s to PATH", bridgeType, envVar, bridgeType)
 	}
+	if err := checkBridgeBinaryName(path); err != nil {
+		return "", fmt.Errorf("%s resolved to %q: %w", bridgeType, path, err)
+	}
 	return path, nil
 }
+
+// checkBridgeBinaryName は spawn するバイナリが IsBridgeProcess (argv[0] + /proc/<pid>/exe) の
+// 両方の判定を通る名前かを、spawn 前に検査する。argv[0] には与えられたパス p がそのまま入るが、
+// kernel が exe として報告するのは symlink を解決した実体なので、両方の basename を見る
+// (issue #50 review Minor 1: `bridge-x → symlink → bridge` は argv 判定だけ通り、起動後に恒久 dead
+// 判定されて watchdog が重複 spawn する)。
+func checkBridgeBinaryName(p string) error {
+	if !state.LooksLikeBridgeExe(p) {
+		return errors.New(bridgeBinaryNameHint)
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return fmt.Errorf("resolve symlinks: %w", err)
+	}
+	if !state.LooksLikeBridgeExe(real) {
+		return fmt.Errorf("symlink target %q: %s", real, bridgeBinaryNameHint)
+	}
+	return nil
+}
+
+// bridgeBinaryNameHint は bridge バイナリの命名不変条件を破ったときのエラー文。
+// IsRunning / pgrepHandle は argv[0] と /proc/<pid>/exe の basename が "bridge-" で始まることで
+// 本物の bridge を識別する (issue #47 / #50)。この不変条件を満たさないバイナリを spawn すると、
+// 起動直後から恒久的に dead 判定され fleet watchdog が毎 tick 重複 spawn するため、spawn 時点で拒否する。
+// exe は symlink 解決後の実ファイルを指すため、symlink や wrapper の名前を変えても通らない —
+// 実体 (ELF) 自体を "bridge-*" に rename する必要がある。
+const bridgeBinaryNameHint = "bridge binary basename must start with \"bridge-\" (process identification relies on it; rename the real binary itself — a symlink or wrapper named bridge-* is not enough because /proc/<pid>/exe resolves to the target)"
 
 // readyPatternFor は bridge type ごとの起動完了シグナル文字列を返す。
 func readyPatternFor(bridgeType string) string {
@@ -339,8 +373,9 @@ func pgrepHandle(handle string) (int, error) {
 			//   - 親 "bash -c '... --participant <handle> ...'" ラッパー (argv[0]=bash)
 			//   - 別 invocation の agenthubctl (argv[0]=agenthubctl, --participant は
 			//     spawn サブコマンドの引数であって bridge バイナリの引数ではない)
-			// を除外し、本物の orphan bridge だけを検出する (issue #31)。
-			if !looksLikeBridgeProcess(readCmdline(pid), handle) {
+			// を除外し、本物の orphan bridge だけを検出する (issue #31)。argv が通っても
+			// /proc/<pid>/exe が bridge バイナリでなければ偽装として除外する (issue #50)。
+			if ok, err := state.IsBridgeProcess(pid, handle); err != nil || !ok {
 				continue
 			}
 			return pid, nil
@@ -349,16 +384,8 @@ func pgrepHandle(handle string) (int, error) {
 	return 0, nil
 }
 
-// readCmdline / looksLikeBridgeProcess は state package に移設した (issue #47: IsRunning でも
-// 同じ「本物の bridge か」判定を使うため)。bridge package 内の呼び出し元向けの薄い wrapper。
-func readCmdline(pid int) []string {
-	argv, err := state.ReadCmdline(pid)
-	if err != nil {
-		return nil
-	}
-	return argv
-}
-
+// looksLikeBridgeProcess は state package に移設した argv 判定の薄い wrapper (issue #47)。
+// 実プロセス判定は state.IsBridgeProcess (argv + exe) を直接使う (issue #50)。
 func looksLikeBridgeProcess(argv []string, handle string) bool {
 	return state.LooksLikeBridgeProcess(argv, handle)
 }
