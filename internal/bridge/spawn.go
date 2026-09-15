@@ -72,12 +72,18 @@ func NewSpawnCmd() *cobra.Command {
 				if displayName == "" {
 					displayName = cfg.DisplayName
 				}
-				if model == "" {
-					model = cfg.Model
-				}
+			}
+			// model: 明示された --model (空文字でも「渡さない」の明示) > 保存 config > 空。
+			// 出所を state に残し、status で "(source: flag|config)" と表示できるようにする (PR #67 review)。
+			ms := modelSpec{}
+			switch {
+			case cmd.Flags().Changed("model"):
+				ms = modelSpec{ID: model, Source: modelSourceFlag}
+			case cfg != nil && cfg.Model != "":
+				ms = modelSpec{ID: cfg.Model, Source: modelSourceConfig}
 			}
 
-			return runSpawn(participant, bridgeType, workdir, tenant, displayName, model, timeout)
+			return runSpawn(participant, bridgeType, workdir, tenant, displayName, ms, timeout)
 		},
 	}
 
@@ -89,14 +95,36 @@ func NewSpawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&bridgeType, "type", defaultBridgeType, "bridge type (bridge-claude2, bridge-codex2, bridge-gemini, …)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge for register (falls back to bridge config)")
-	cmd.Flags().StringVar(&model, "model", "", "LLM model id passed to the bridge (bridge-claude2 only; falls back to bridge config, empty = bridge default)")
+	cmd.Flags().StringVar(&model, "model", "", "LLM model id passed to the bridge (bridge-claude2 only; falls back to bridge config; pass \"\" to override a saved model with the bridge default)")
 
 	return cmd
 }
 
 var validHandle = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName, model string, timeoutS int) error {
+// modelSpec は spawn に渡す model id とその出所 (issue #46 / PR #67 review)。
+// ID が空なら agenthubctl は -model を渡さず、Source も空にする。
+type modelSpec struct {
+	ID     string
+	Source string
+}
+
+const (
+	modelSourceFlag    = "flag"    // spawn --model
+	modelSourceConfig  = "config"  // bridge config (config set --model / start / restart)
+	modelSourceState   = "state"   // restart / watchdog が前回 spawn 時の値を引き継いだ
+	modelSourceCmdline = "cmdline" // sync が稼働中プロセスの argv から採取した
+)
+
+// stateSource は state.Entry に記録する出所を返す。model が空なら出所も空。
+func (m modelSpec) stateSource() string {
+	if m.ID == "" {
+		return ""
+	}
+	return m.Source
+}
+
+func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, timeoutS int) error {
 	if !validHandle.MatchString(participant) {
 		return fmt.Errorf("invalid handle %q: only [a-zA-Z0-9_-] allowed", participant)
 	}
@@ -177,12 +205,12 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName, model s
 		}
 		// model は bridge-claude2 の -model フラグに渡す (issue #46)。bridge 側の解決順は
 		// -model > AGENT_HUB_MODEL env > claude default なので、未指定なら従来どおり。
-		if model != "" {
-			args = append(args, "-model", model)
+		if model.ID != "" {
+			args = append(args, "-model", model.ID)
 		}
-	} else if model != "" {
+	} else if model.ID != "" {
 		// 他 type には -display-name 同様に渡していない。保存はされるが効かないことを明示する。
-		fmt.Fprintf(os.Stderr, "warning: model %q is only passed to bridge-claude2; ignored for %s\n", model, bridgeType)
+		fmt.Fprintf(os.Stderr, "warning: model %q is only passed to bridge-claude2; ignored for %s\n", model.ID, bridgeType)
 	}
 
 	proc := exec.Command(binary, args...)
@@ -209,7 +237,7 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName, model s
 	pid := proc.Process.Pid
 
 	// PID をロック保持中に即保存してから解放する
-	st.Set(participant, pid, bridgeType, wd, tenant, model, logPath)
+	st.Set(participant, pid, bridgeType, wd, tenant, model.ID, model.stateSource(), logPath)
 	if err := st.Save(); err != nil {
 		unlock()
 		return fmt.Errorf("save state: %w", err)

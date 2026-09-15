@@ -39,7 +39,7 @@ func runList() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTYPE\tTENANT\tWORKDIR\tSTARTED")
+	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTYPE\tTENANT\tMODEL\tWORKDIR\tSTARTED")
 
 	deadCount := 0
 	for _, e := range st.Bridges {
@@ -57,14 +57,14 @@ func runList() error {
 				deadCount++
 			}
 		}
-		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
-			e.Handle, status, pid, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), e.Workdir, e.StartedAt)
+		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+			e.Handle, status, pid, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), modelDisplay(e.Model), e.Workdir, e.StartedAt)
 	}
 
 	// state に無い稼働中プロセスを untracked として併記する。
 	for _, o := range orphans {
-		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
-			o.handle, "untracked", o.pid, bridgeTypeOrDefault(o.bridgeType), tenantOrDefault(o.tenant), o.workdir, "(running)")
+		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+			o.handle, "untracked", o.pid, bridgeTypeOrDefault(o.bridgeType), tenantOrDefault(o.tenant), modelDisplay(o.model), o.workdir, "(running)")
 	}
 
 	if err := w.Flush(); err != nil {

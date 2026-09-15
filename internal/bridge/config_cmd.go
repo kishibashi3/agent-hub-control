@@ -37,7 +37,7 @@ func newConfigSetCmd() *cobra.Command {
 		Use:   "set <handle>",
 		Short: "Save defaults for a bridge handle",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			handle := args[0]
 			if !validHandle.MatchString(handle) {
 				return fmt.Errorf("invalid handle %q: only [a-zA-Z0-9_-] allowed", handle)
@@ -64,7 +64,9 @@ func newConfigSetCmd() *cobra.Command {
 			if displayName != "" {
 				existing.DisplayName = displayName
 			}
-			if model != "" {
+			// model は明示指定 (Changed) で判定する: `--model ""` で保存値を消して bridge default に戻せる
+			// (PR #67 review Minor 2)。
+			if cmd.Flags().Changed("model") {
 				existing.Model = model
 			}
 
@@ -80,7 +82,7 @@ func newConfigSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tenant, "tenant", "", "default tenant ID")
 	cmd.Flags().StringVar(&bridgeType, "type", "", "bridge type (default: bridge-claude2)")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed on spawn")
-	cmd.Flags().StringVar(&model, "model", "", "LLM model id passed on spawn (bridge-claude2 only; empty = bridge default)")
+	cmd.Flags().StringVar(&model, "model", "", "LLM model id passed on spawn (bridge-claude2 only; pass \"\" to clear)")
 	return cmd
 }
 
@@ -107,7 +109,7 @@ func newConfigGetCmd() *cobra.Command {
 			fmt.Fprintf(w, "tenant\t%s\n", cfg.Tenant)
 			fmt.Fprintf(w, "type\t%s\n", bridgeType)
 			fmt.Fprintf(w, "display_name\t%s\n", cfg.DisplayName)
-			fmt.Fprintf(w, "model\t%s\n", modelOrDefault(cfg.Model))
+			fmt.Fprintf(w, "model\t%s\n", configModelDisplay(cfg.Model))
 			return w.Flush()
 		},
 	}
@@ -135,19 +137,40 @@ func newConfigListCmd() *cobra.Command {
 					bridgeType = defaultBridgeType
 				}
 				fmt.Fprintf(w, "@%s\t%s\t%s\t%s\t%s\t%s\n",
-					cfg.Handle, bridgeType, cfg.Tenant, modelOrDefault(cfg.Model), cfg.Workdir, cfg.DisplayName)
+					cfg.Handle, bridgeType, cfg.Tenant, configModelDisplay(cfg.Model), cfg.Workdir, cfg.DisplayName)
 			}
 			return w.Flush()
 		},
 	}
 }
 
-// modelOrDefault は表示用: 空の model は bridge 内蔵 default を使う意味なので "(default)" と出す。
-func modelOrDefault(model string) string {
+// configModelDisplay は config 表示用: 未設定は "(unset)"。
+func configModelDisplay(model string) string {
 	if model == "" {
-		return "(default)"
+		return "(unset)"
 	}
 	return model
+}
+
+// modelDisplay は state 表示用 (list / status 全件表)。空は「agenthubctl が -model を渡していない」
+// という事実だけを示す。実効 model は bridge 側が AGENT_HUB_MODEL env か内蔵 default で解決するため、
+// agenthubctl からは観測できず "(default)" と断定しない (PR #67 review)。
+func modelDisplay(model string) string {
+	if model == "" {
+		return "(not passed)"
+	}
+	return model
+}
+
+// modelDetail は status <handle> 用: model id と出所、または未指定時の解決先の説明。
+func modelDetail(model, source string) string {
+	if model == "" {
+		return "(not passed; bridge resolves AGENT_HUB_MODEL env or its default)"
+	}
+	if source == "" {
+		return model
+	}
+	return fmt.Sprintf("%s (source: %s)", model, source)
 }
 
 func newConfigDeleteCmd() *cobra.Command {

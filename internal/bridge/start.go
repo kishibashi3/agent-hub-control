@@ -51,7 +51,7 @@ func runStartOne(handle string, timeout int) error {
 	if bridgeType == "" {
 		bridgeType = defaultBridgeType
 	}
-	return runSpawn(handle, bridgeType, cfg.Workdir, cfg.Tenant, cfg.DisplayName, cfg.Model, timeout)
+	return runSpawn(handle, bridgeType, cfg.Workdir, cfg.Tenant, cfg.DisplayName, modelSpec{ID: cfg.Model, Source: modelSourceConfig}, timeout)
 }
 
 func runStartAll(timeout int) error {
@@ -90,7 +90,7 @@ func runStartAll(timeout int) error {
 			bridgeType = defaultBridgeType
 		}
 		fmt.Fprintf(os.Stderr, "starting @%s (type=%s, workdir=%s)...\n", cfg.Handle, bridgeType, cfg.Workdir)
-		if err := runSpawn(cfg.Handle, bridgeType, cfg.Workdir, cfg.Tenant, cfg.DisplayName, cfg.Model, timeout); err != nil {
+		if err := runSpawn(cfg.Handle, bridgeType, cfg.Workdir, cfg.Tenant, cfg.DisplayName, modelSpec{ID: cfg.Model, Source: modelSourceConfig}, timeout); err != nil {
 			fmt.Fprintf(os.Stderr, "error: @%s: %v\n", cfg.Handle, err)
 			failed = append(failed, cfg.Handle)
 			continue

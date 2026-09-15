@@ -71,8 +71,13 @@ func runRestart(handle, displayName string, spawnTimeoutS int) error {
 
 	// エントリから spawn に必要な情報を保存
 	savedBridgeType := entry.BridgeType
-	// model は state に記録された値 (= 前回 spawn 時に渡した値) をそのまま引き継ぐ (issue #46)。
-	savedModel := entry.Model
+	// model: display_name と同じく bridge config を再読し、保存されていればそれを優先する
+	// (`config set X --model foo` → `restart X` で新 model が効く、PR #67 review Minor 1)。
+	// config に無ければ state に記録された前回値を引き継ぐ (config 無しで spawn された bridge 用)。
+	savedModel := modelSpec{ID: entry.Model, Source: modelSourceState}
+	if cfg, cfgErr := bridgecfg.Load(handle); cfgErr == nil && cfg != nil && cfg.Model != "" {
+		savedModel = modelSpec{ID: cfg.Model, Source: modelSourceConfig}
+	}
 	if savedBridgeType == "" {
 		savedBridgeType = defaultBridgeType
 	}

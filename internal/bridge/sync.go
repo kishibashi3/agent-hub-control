@@ -102,6 +102,9 @@ func runSync(dryRun bool) error {
 					StartedAt:  time.Now().UTC().Format(time.RFC3339),
 					Model:      o.model,
 				}
+				if o.model != "" {
+					st.Bridges[o.handle].ModelSource = modelSourceCmdline
+				}
 			}
 		}
 	}

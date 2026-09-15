@@ -40,7 +40,7 @@ func TestRunStopCleansStaleState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load locked: %v", err)
 	}
-	st.Set(handle, deadPID(t), "bridge-claude2", "/tmp/wd", "", "", "/tmp/log")
+	st.Set(handle, deadPID(t), "bridge-claude2", "/tmp/wd", "", "", "", "/tmp/log")
 	if err := st.Save(); err != nil {
 		unlock()
 		t.Fatalf("save: %v", err)
@@ -86,7 +86,7 @@ func TestRunListReconcilesRestartedHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load locked: %v", err)
 	}
-	st.Set(handle, deadPID(t), "bridge-claude2", "/tmp/wd", "", "", "/tmp/log")
+	st.Set(handle, deadPID(t), "bridge-claude2", "/tmp/wd", "", "", "", "/tmp/log")
 	if err := st.Save(); err != nil {
 		unlock()
 		t.Fatalf("save: %v", err)
@@ -118,5 +118,51 @@ func TestRunListReconcilesRestartedHandle(t *testing.T) {
 	}
 	if !strings.Contains(line, strconv.Itoa(livePID)) {
 		t.Errorf("expected @%s line to contain live pid=%d, got line: %q", handle, livePID, line)
+	}
+}
+
+// TestListShowsModelColumn: `bridge list` に MODEL 列があり、state の model が表示される。
+// 未指定は "(default)" と断定せず "(not passed)" (bridge 側が env / default で解決するため) (PR #67 review)。
+func TestListShowsModelColumn(t *testing.T) {
+	t.Setenv("AGENT_HUB_HOME", t.TempDir())
+	st, unlock, err := state.LoadLocked()
+	if err != nil {
+		t.Fatalf("load locked: %v", err)
+	}
+	st.Set("with-model", deadPID(t), "bridge-claude2", "/tmp/wd", "", "model-abc", "config", "/tmp/log")
+	st.Set("no-model", deadPID(t), "bridge-claude2", "/tmp/wd", "", "", "", "/tmp/log")
+	if err := st.Save(); err != nil {
+		unlock()
+		t.Fatalf("save: %v", err)
+	}
+	unlock()
+
+	out := captureStdout(t, func() {
+		if err := runList(); err != nil {
+			t.Errorf("runList error: %v", err)
+		}
+	})
+	for _, want := range []string{"MODEL", "model-abc", "(not passed)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("list output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "(default)") && !strings.Contains(out, "TENANT") {
+		t.Errorf("model column must not claim (default)")
+	}
+}
+
+// TestModelDetail: status <handle> の model 行は id + 出所、未指定時は解決先の説明を出す。
+func TestModelDetail(t *testing.T) {
+	cases := []struct{ model, source, want string }{
+		{"m1", "flag", "m1 (source: flag)"},
+		{"m1", "config", "m1 (source: config)"},
+		{"m1", "", "m1"},
+		{"", "", "(not passed; bridge resolves AGENT_HUB_MODEL env or its default)"},
+	}
+	for _, tc := range cases {
+		if got := modelDetail(tc.model, tc.source); got != tc.want {
+			t.Errorf("modelDetail(%q,%q) = %q, want %q", tc.model, tc.source, got, tc.want)
+		}
 	}
 }
