@@ -131,7 +131,7 @@ func runWatchdogOnce() (onceSummary, error) {
 		wg.Add(1)
 		go func(i int, e state.Entry) {
 			defer wg.Done()
-			err := runSpawn(e.Handle, e.BridgeType, e.Workdir, e.Tenant, "", defaultSpawnTimeoutS)
+			err := runSpawn(e.Handle, e.BridgeType, e.Workdir, e.Tenant, "", modelSpec{ID: e.Model, Source: modelSourceState}, defaultSpawnTimeoutS)
 			results[i] = respawnResult{handle: e.Handle, err: err}
 		}(i, e)
 	}

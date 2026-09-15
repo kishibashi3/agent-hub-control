@@ -21,6 +21,14 @@ type Entry struct {
 	Tenant     string `json:"tenant,omitempty"`
 	LogPath    string `json:"log_path"`
 	StartedAt  string `json:"started_at"`
+	// Model は spawn 時に bridge へ渡した model id (issue #46)。空 = agenthubctl は渡していない
+	// (bridge 側が AGENT_HUB_MODEL env か内蔵 default で解決する。agenthubctl は env を見ないので
+	// 実効値は断定しない)。restart / watchdog respawn が同じ model で起動し直すために記録する。
+	Model string `json:"model,omitempty"`
+	// ModelSource は Model がどこから来たか: "flag" (spawn --model) / "config" (bridge config) /
+	// "state" (restart / watchdog が前回値を引き継いだ) / "cmdline" (sync が argv から採取)。
+	// operator が status で「どの model で動いていて、それはどこから来たか」を読めるようにする。
+	ModelSource string `json:"model_source,omitempty"`
 }
 
 // IsRunning はこの entry の handle に対応する bridge プロセスが実際に稼働しているかを返す。
@@ -216,15 +224,17 @@ func (s *State) Save() error {
 }
 
 // Set は handle のエントリを追加/更新する。
-func (s *State) Set(handle string, pid int, bridgeType, workdir, tenant, logPath string) {
+func (s *State) Set(handle string, pid int, bridgeType, workdir, tenant, model, modelSource, logPath string) {
 	s.Bridges[handle] = &Entry{
-		Handle:     handle,
-		PID:        pid,
-		BridgeType: bridgeType,
-		Workdir:    workdir,
-		Tenant:     tenant,
-		LogPath:    logPath,
-		StartedAt:  time.Now().UTC().Format(time.RFC3339),
+		Handle:      handle,
+		PID:         pid,
+		BridgeType:  bridgeType,
+		Workdir:     workdir,
+		Tenant:      tenant,
+		LogPath:     logPath,
+		StartedAt:   time.Now().UTC().Format(time.RFC3339),
+		Model:       model,
+		ModelSource: modelSource,
 	}
 }
 

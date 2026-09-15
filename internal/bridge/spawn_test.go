@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kishibashi3/agent-hub-control/internal/state"
 )
 
 // TestPgrepHandleNoMatch は存在しないハンドルに対して 0 が返ることを確認する。
@@ -93,7 +95,7 @@ func TestSpawnBridgeArgs(t *testing.T) {
 	// run spawn in background and wait briefly; it succeeds when "registered and listening" is found
 	done := make(chan error, 1)
 	go func() {
-		done <- runSpawn(handle, "bridge-claude2", workdir, "", "", 10)
+		done <- runSpawn(handle, "bridge-claude2", workdir, "", "", modelSpec{ID: "test-model-x", Source: modelSourceFlag}, 10)
 	}()
 
 	select {
@@ -112,7 +114,7 @@ func TestSpawnBridgeArgs(t *testing.T) {
 	}
 	defer f.Close()
 
-	var foundParticipant, foundUser bool
+	var foundParticipant, foundUser, foundModel bool
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -122,12 +124,27 @@ func TestSpawnBridgeArgs(t *testing.T) {
 		if strings.Contains(line, "--user") {
 			foundUser = true
 		}
+		if strings.Contains(line, "-model test-model-x") {
+			foundModel = true
+		}
 	}
 	if !foundParticipant {
 		t.Error("bridge was not called with --participant flag")
 	}
 	if foundUser {
 		t.Error("bridge was called with --user flag (deprecated; should use --participant)")
+	}
+	if !foundModel {
+		t.Error("bridge was not called with -model <id> (issue #46)")
+	}
+
+	// state にも model が記録される (restart / watchdog respawn が同じ model で起動し直すため)。
+	st, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if e := st.Get(handle); e == nil || e.Model != "test-model-x" || e.ModelSource != modelSourceFlag {
+		t.Errorf("state entry = %+v, want Model=test-model-x ModelSource=flag", e)
 	}
 }
 

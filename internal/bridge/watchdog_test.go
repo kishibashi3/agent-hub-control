@@ -79,7 +79,7 @@ func TestRunWatchdogAllAlive(t *testing.T) {
 		t.Fatalf("LoadLocked: %v", err)
 	}
 	// IsRunning は argv で「この handle の bridge か」を突合するため (issue #47)、argv を偽装したダミーで alive 判定させる。
-	st.Set("self", fakeBridgePID(t, "self"), "", "/tmp", "", "/tmp/self.log")
+	st.Set("self", fakeBridgePID(t, "self"), "", "/tmp", "", "", "", "/tmp/self.log")
 	if err := st.Save(); err != nil {
 		unlock()
 		t.Fatalf("Save: %v", err)
@@ -106,7 +106,7 @@ func TestRunWatchdogCleansDeadOnRespawnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLocked: %v", err)
 	}
-	st.Set("alive", fakeBridgePID(t, "alive"), "", "/tmp", "", "/tmp/alive.log")
+	st.Set("alive", fakeBridgePID(t, "alive"), "", "/tmp", "", "", "", "/tmp/alive.log")
 	// 死んだエントリ。BridgeType は PATH に存在しないので runSpawn は resolveBinary で fail-fast し、
 	// 実プロセスは起動しない（テスト副作用なし）。
 	st.Bridges["dead"] = &state.Entry{
@@ -155,7 +155,7 @@ func TestRunWatchdogDaemonRunsAndStops(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLocked: %v", err)
 	}
-	st.Set("self", fakeBridgePID(t, "self"), "", "/tmp", "", "/tmp/self.log")
+	st.Set("self", fakeBridgePID(t, "self"), "", "/tmp", "", "", "", "/tmp/self.log")
 	if err := st.Save(); err != nil {
 		unlock()
 		t.Fatalf("Save: %v", err)

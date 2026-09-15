@@ -35,14 +35,14 @@ func runStatusAll() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTYPE\tTENANT\tSTARTED")
+	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTYPE\tTENANT\tMODEL\tSTARTED")
 	for _, e := range st.Bridges {
 		label := "DEAD"
 		if e.IsRunning() {
 			label = "LIVE"
 		}
-		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\n",
-			e.Handle, label, e.PID, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), e.StartedAt)
+		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+			e.Handle, label, e.PID, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), modelDisplay(e.Model), e.StartedAt)
 	}
 	return w.Flush()
 }
@@ -68,6 +68,7 @@ func runStatus(user string) error {
 	fmt.Printf("pid:      %d\n", entry.PID)
 	fmt.Printf("type:     %s\n", bridgeTypeOrDefault(entry.BridgeType))
 	fmt.Printf("tenant:   %s\n", tenantOrDefault(entry.Tenant))
+	fmt.Printf("model:    %s\n", modelDetail(entry.Model, entry.ModelSource))
 	fmt.Printf("workdir:  %s\n", entry.Workdir)
 	fmt.Printf("log:      %s\n", entry.LogPath)
 	fmt.Printf("started:  %s\n", entry.StartedAt)

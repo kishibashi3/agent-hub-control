@@ -39,6 +39,7 @@ type orphanEntry struct {
 	workdir    string
 	tenant     string
 	bridgeType string
+	model      string
 }
 
 func runSync(dryRun bool) error {
@@ -99,6 +100,10 @@ func runSync(dryRun bool) error {
 					Tenant:     o.tenant,
 					LogPath:    logPath,
 					StartedAt:  time.Now().UTC().Format(time.RFC3339),
+					Model:      o.model,
+				}
+				if o.model != "" {
+					st.Bridges[o.handle].ModelSource = modelSourceCmdline
 				}
 			}
 		}
@@ -133,7 +138,7 @@ func findOrphanBridges(st *state.State) ([]orphanEntry, error) {
 		}
 
 		args := strings.Split(string(cmdlineBytes), "\x00")
-		handle, workdir, tenant, bridgeType := parseBridgeCmdline(args)
+		handle, workdir, tenant, bridgeType, model := parseBridgeCmdline(args)
 		if handle == "" {
 			continue // --participant が見つからない
 		}
@@ -149,6 +154,7 @@ func findOrphanBridges(st *state.State) ([]orphanEntry, error) {
 			workdir:    workdir,
 			tenant:     tenant,
 			bridgeType: bridgeType,
+			model:      model,
 		})
 	}
 
@@ -185,7 +191,7 @@ func pgrepBridgeProcesses() ([]int, error) {
 
 // parseBridgeCmdline は bridge プロセスの cmdline 引数から各フラグを抽出する。
 // args は /proc/<pid>/cmdline を "\x00" で split したもの。
-func parseBridgeCmdline(args []string) (handle, workdir, tenant, bridgeType string) {
+func parseBridgeCmdline(args []string) (handle, workdir, tenant, bridgeType, model string) {
 	if len(args) > 0 {
 		comm := args[0]
 		if idx := strings.LastIndex(comm, "/"); idx >= 0 {
@@ -204,6 +210,9 @@ func parseBridgeCmdline(args []string) (handle, workdir, tenant, bridgeType stri
 			workdir = args[i+1]
 		case "--tenant":
 			tenant = args[i+1]
+		case "-model", "--model":
+			// spawn は "-model <id>" で渡す (Go flag は -/-- 同義)。orphan 取り込みで Entry.Model を復元する (issue #46)。
+			model = args[i+1]
 		}
 	}
 	return
