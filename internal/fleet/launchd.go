@@ -88,6 +88,7 @@ func (c *Config) statusLaunchd() error {
 	fmt.Printf("scope:     %s (init=launchd)\n", c.Scope)
 	fmt.Printf("plist:     %s%s\n", plistPath, existsMark(plistPath))
 	fmt.Printf("env file:  %s%s\n", c.EnvFile, existsMark(c.EnvFile))
+	printEnvFilePermWarning(c.EnvFile)
 	fmt.Println()
 
 	out, err := exec.Command("launchctl", "list", launchdLabel).CombinedOutput()

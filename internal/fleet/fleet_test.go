@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +51,73 @@ func TestWriteEnvScaffoldCreatesWith0600(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("env scaffold perm = %o, want 0600", perm)
+	}
+}
+
+// TestEnvFilePermWarning: an existing env file readable by group/other gets a warning that
+// names the file and the chmod fix; a 0600 (or 0400) file and a missing file stay silent
+// (issue #51).
+func TestEnvFilePermWarning(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		perm os.FileMode
+		warn bool
+	}{
+		{"0644-warns", 0o644, true},
+		{"0640-warns", 0o640, true},
+		{"0604-warns", 0o604, true},
+		{"0600-silent", 0o600, false},
+		{"0400-silent", 0o400, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(dir, tc.name+".env")
+			if err := os.WriteFile(p, []byte("GITHUB_PAT=x\n"), tc.perm); err != nil {
+				t.Fatal(err)
+			}
+			// WriteFile honours umask; force the exact mode under test.
+			if err := os.Chmod(p, tc.perm); err != nil {
+				t.Fatal(err)
+			}
+			w := envFilePermWarning(p)
+			if tc.warn && (w == "" || !strings.Contains(w, "chmod 600 "+p)) {
+				t.Errorf("perm %04o: expected warning with chmod hint, got %q", tc.perm, w)
+			}
+			if !tc.warn && w != "" {
+				t.Errorf("perm %04o: expected no warning, got %q", tc.perm, w)
+			}
+		})
+	}
+	if w := envFilePermWarning(filepath.Join(dir, "missing.env")); w != "" {
+		t.Errorf("missing file: expected no warning, got %q", w)
+	}
+}
+
+// TestWriteEnvScaffoldDoesNotChmodExisting: a loose existing env file is warned about but
+// never chmod'ed or rewritten by install (issue #51: warning only, no auto-fix).
+func TestWriteEnvScaffoldDoesNotChmodExisting(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), "fleet.env")
+	if err := os.WriteFile(envFile, []byte("GITHUB_PAT=secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(envFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{Scope: ScopeUser, EnvFile: envFile}
+	if err := c.writeEnvScaffold("# scaffold\n"); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o644 {
+		t.Errorf("install changed mode of existing env file to %04o (must not auto-chmod)", got)
+	}
+	b, _ := os.ReadFile(envFile)
+	if string(b) != "GITHUB_PAT=secret\n" {
+		t.Errorf("install rewrote existing env file: %q", b)
 	}
 }
 
