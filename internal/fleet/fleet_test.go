@@ -234,6 +234,11 @@ func seedSystemScopeUnits(t *testing.T) (c *Config, svc, tmr string) {
 		EnvFile:               filepath.Join(fakeEtc, "fleet.env"),
 		systemUnitDirOverride: fakeEtc,
 	}
+	// Precondition: the override must actually redirect the opposite-scope probe at fakeEtc.
+	// Without this, a non-functional override yields no orphans and the guard tests pass vacuously.
+	if got := c.otherScopeSystemdUnits(); len(got) != 2 {
+		t.Fatalf("seed precondition: otherScopeSystemdUnits() should see the 2 fake units in %s, got %v", fakeEtc, got)
+	}
 	return c, filepath.Join(fakeEtc, serviceName+".service"), filepath.Join(fakeEtc, serviceName+".timer")
 }
 
