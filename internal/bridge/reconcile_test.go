@@ -147,8 +147,13 @@ func TestListShowsModelColumn(t *testing.T) {
 			t.Errorf("list output missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "(default)") && !strings.Contains(out, "TENANT") {
-		t.Errorf("model column must not claim (default)")
+	// 未指定行の表示は modelDisplay で決まるので単体で assert する
+	// (list 全出力に対する Contains では header 等に紛れて検証にならない — issue #70)。
+	if got := modelDisplay(""); got != "(not passed)" {
+		t.Errorf(`modelDisplay("") = %q, want "(not passed)"`, got)
+	}
+	if got := modelDisplay("model-abc"); got != "model-abc" {
+		t.Errorf(`modelDisplay("model-abc") = %q, want "model-abc"`, got)
 	}
 }
 
