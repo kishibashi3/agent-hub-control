@@ -302,8 +302,10 @@ func TestIsRunningEmptyArgvUnreadableExe(t *testing.T) {
 		}
 		ok, err := state.IsBridgeProcess(pid, "alpha")
 		if err != nil && pidVanished(pid, err) {
-			// 選定から assert までの間に短命 PID (kworker 等) が消えた。回帰の有無は判定できないので skip (issue #73)
-			t.Skipf("pid %d vanished before assert: %v", pid, err)
+			// 選定から assert までの間に短命 PID (kworker 等) が消えた。この PID では回帰の有無を判定できないので
+			// 次の候補を試す (issue #73, #83)。候補が尽きたらループ後の t.Skip に落ちる
+			t.Logf("pid %d vanished before assert, trying next candidate: %v", pid, err)
+			continue
 		}
 		if err != nil || ok {
 			t.Errorf("pid %d (empty argv, unreadable exe): IsBridgeProcess = (%v, %v), want (false, nil)", pid, ok, err)
