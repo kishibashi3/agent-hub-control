@@ -156,6 +156,8 @@ func TestWriteEnvScaffoldSystemScopeChownViaEuidSeam(t *testing.T) {
 		wantGID int
 	}{
 		{"root takes chown branch", 0, target},
+		// Without chown a new file takes the creator's primary gid; this relies on Linux
+		// semantics and on the temp parent dir not being setgid (which would inherit its gid).
 		{"non-root skips chown branch", 1000, primary},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
