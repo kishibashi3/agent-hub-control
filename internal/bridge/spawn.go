@@ -317,12 +317,8 @@ func linkLegacyLogPath(handle, logPath string) {
 				fmt.Fprintf(os.Stderr, "warning: legacy log path %s exists and is not owned by us; leaving it untouched (new log: %s)\n", legacy, logPath)
 				return
 			}
-			backup, err := legacyBackupPath(legacy)
+			backup, err := moveLegacyLogAside(legacy)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: cannot move legacy log %s aside: %v (new log: %s)\n", legacy, err, logPath)
-				return
-			}
-			if err := os.Rename(legacy, backup); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: cannot move legacy log %s aside: %v (new log: %s)\n", legacy, err, logPath)
 				return
 			}
@@ -342,27 +338,32 @@ func linkLegacyLogPath(handle, logPath string) {
 	fmt.Fprintf(os.Stderr, "note: %s is deprecated and now a symlink to %s (will be removed in a future minor release)\n", legacy, logPath)
 }
 
-// legacyBackupPath は旧ログの退避先を返す。<legacy>.pre-migration が無ければそれ、あれば既存 backup を
-// os.Rename で無言上書きしないよう <legacy>.pre-migration.<UTC timestamp> を返す (issue #72)。
+// moveLegacyLogAside は旧ログを退避して退避先を返す。<legacy>.pre-migration が無ければそこへ、あれば
+// 既存 backup を無言上書きしないよう <legacy>.pre-migration.<UTC timestamp> へ退避する (issue #72)。
 // timestamp 付きも既にある (同一秒内の再実行) 場合はエラー。
-func legacyBackupPath(legacy string) (string, error) {
+// os.Rename は宛先を上書きするため、存在確認との間に backup が作られると上書きされる (TOCTOU)。
+// os.Link は宛先が既にあれば必ず失敗するので、Link → Remove の 2 手順で退避する (PR #81 review)。
+func moveLegacyLogAside(legacy string) (string, error) {
 	backup := legacy + ".pre-migration"
-	if _, err := os.Lstat(backup); errors.Is(err, os.ErrNotExist) {
-		return backup, nil
-	} else if err != nil {
+	err := os.Link(legacy, backup)
+	if errors.Is(err, os.ErrExist) {
+		stamped := backup + "." + nowFunc().UTC().Format("20060102T150405Z")
+		if err = os.Link(legacy, stamped); err == nil {
+			fmt.Fprintf(os.Stderr, "note: %s already exists; keeping it and using %s instead\n", backup, stamped)
+		}
+		backup = stamped
+	}
+	if err != nil {
 		return "", err
 	}
-	stamped := backup + "." + nowFunc().UTC().Format("20060102T150405Z")
-	if _, err := os.Lstat(stamped); errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(os.Stderr, "note: %s already exists; keeping it and using %s instead\n", backup, stamped)
-		return stamped, nil
-	} else if err != nil {
+	if err := os.Remove(legacy); err != nil {
+		os.Remove(backup)
 		return "", err
 	}
-	return "", fmt.Errorf("backup paths %s and %s already exist", backup, stamped)
+	return backup, nil
 }
 
-// nowFunc は legacyBackupPath の timestamp 用。テストが固定時刻に差し替える。
+// nowFunc は moveLegacyLogAside の timestamp 用。テストが固定時刻に差し替える。
 var nowFunc = time.Now
 
 // ownedBySelf は fi のファイルが現在の uid 所有かを返す。uid が取れない環境 (non-unix) では false

@@ -294,7 +294,6 @@ func TestResolveOrphanLogPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy := state.LegacyBridgeLogPath(dir, "h")
-	prevOwned := ownedBySelf
 
 	resolve := func() string {
 		t.Helper()
@@ -321,13 +320,11 @@ func TestResolveOrphanLogPath(t *testing.T) {
 	if got := resolve(); got != legacy {
 		t.Errorf("only legacy exists: got %q, want %q", got, legacy)
 	}
-	func() {
-		stubOwnedBySelf(t, false)
-		defer func() { ownedBySelf = prevOwned }()
-		if got := resolve(); got != newPath {
-			t.Errorf("legacy is other-owned regular file: got %q, want new path %q (must not adopt)", got, newPath)
-		}
-	}()
+	// 以降は他者所有扱いのまま (新パス優先のケースなので所有者判定に依存しない)。復元は t.Cleanup
+	stubOwnedBySelf(t, false)
+	if got := resolve(); got != newPath {
+		t.Errorf("legacy is other-owned regular file: got %q, want new path %q (must not adopt)", got, newPath)
+	}
 	if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
