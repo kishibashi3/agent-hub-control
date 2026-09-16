@@ -164,4 +164,9 @@ PATH={{.PATH}}
 # GITHUB_PAT=ghp_xxxxxxxxxxxxxxxx
 # AGENT_HUB_URL=https://your-hub.example.com/mcp
 # AGENT_HUB_TENANT=your-tenant
+#
+# Pin bridge binaries so the fleet never silently runs a dev build from PATH (issue #74).
+# Use ABSOLUTE paths: systemd does not expand ~ or $HOME in this file.
+# AGENT_HUB_BRIDGE_CLAUDE2_BIN={{.Home}}/.agent-hub/bin/bridge-claude2
+# AGENT_HUB_BIN_POLICY=require
 `
