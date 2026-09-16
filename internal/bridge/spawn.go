@@ -356,15 +356,66 @@ func warnLegacyLogPath(handle, logPath string) {
 	}
 }
 
+// binPolicyEnv は PATH fallback の扱いを決める env var (issue #74)。
+//   - 未設定 / "path": AGENT_HUB_{TYPE}_BIN が無ければ PATH で探す (従来動作)
+//   - "warn":          PATH で探すが stderr に warning を出す
+//   - "require":       AGENT_HUB_{TYPE}_BIN が無ければ失敗させる (PATH fallback 禁止)
+//
+// フラグではなく env にするのは、fleet.env の 1 行で unit を作り直さずに切り替え / 切り戻し
+// できるようにするため。手動の spawn / start / restart / watchdog にも同じ env で効く。
+const binPolicyEnv = "AGENT_HUB_BIN_POLICY"
+
+const (
+	binPolicyPath    = "path"
+	binPolicyWarn    = "warn"
+	binPolicyRequire = "require"
+)
+
+// binPolicy は AGENT_HUB_BIN_POLICY を読む。未知の値は打ち間違いが黙って path 扱いに
+// ならないようエラーにする。
+func binPolicy() (string, error) {
+	switch v := os.Getenv(binPolicyEnv); v {
+	case "", binPolicyPath:
+		return binPolicyPath, nil
+	case binPolicyWarn, binPolicyRequire:
+		return v, nil
+	default:
+		return "", fmt.Errorf("%s=%q is invalid: must be one of %s, %s, %s", binPolicyEnv, v, binPolicyPath, binPolicyWarn, binPolicyRequire)
+	}
+}
+
 // resolveBinary は bridgeType に対応するバイナリのパスを解決する。
-// 優先順位: AGENT_HUB_{TYPE}_BIN env > PATH の {bridgeType}
+// 優先順位: AGENT_HUB_{TYPE}_BIN env > PATH の {bridgeType} (AGENT_HUB_BIN_POLICY に従う)
 // 例: bridge-claude2 → AGENT_HUB_BRIDGE_CLAUDE2_BIN
 func resolveBinary(bridgeType string) (string, error) {
 	typeUpper := strings.ToUpper(strings.ReplaceAll(bridgeType, "-", "_"))
 	envVar := "AGENT_HUB_" + typeUpper + "_BIN"
-	if binEnv := os.Getenv(envVar); binEnv != "" {
-		if _, err := os.Stat(binEnv); err != nil {
+	policy, err := binPolicy()
+	if err != nil {
+		return "", err
+	}
+	binEnv, set := os.LookupEnv(envVar)
+	if binEnv != "" {
+		// systemd EnvironmentFile は ~ も $VAR も展開しないので、未展開のまま届いた値は
+		// policy に関係なく拒否する。shell 経由と systemd 経由で挙動が変わるためコードでも展開しない。
+		if strings.ContainsAny(binEnv, "~$") {
+			return "", fmt.Errorf("%s=%q contains an unexpanded '~' or '$' (systemd EnvironmentFile does not expand them); use an absolute path", envVar, binEnv)
+		}
+		// 相対パスは agenthubctl の cwd 基準で解決され、systemd 経由と shell 経由で別の binary を
+		// 指しうるので、policy に関係なく拒否する (issue #82)。
+		if !filepath.IsAbs(binEnv) {
+			return "", fmt.Errorf("%s=%q is a relative path (resolved against the current directory, which differs between systemd and shell); use an absolute path", envVar, binEnv)
+		}
+		fi, err := os.Stat(binEnv)
+		if err != nil {
 			return "", fmt.Errorf("%s=%q not found: %w", envVar, binEnv, err)
+		}
+		// ディレクトリや実行権限のないファイルは Start() まで失敗が遅れ env 名が出ないので、ここで弾く。
+		if !fi.Mode().IsRegular() {
+			return "", fmt.Errorf("%s=%q is not a regular file (mode %s)", envVar, binEnv, fi.Mode().Type())
+		}
+		if fi.Mode().Perm()&0o111 == 0 {
+			return "", fmt.Errorf("%s=%q is not executable (mode %s)", envVar, binEnv, fi.Mode().Perm())
 		}
 		if err := checkBridgeBinaryName(binEnv); err != nil {
 			return "", fmt.Errorf("%s=%q: %w", envVar, binEnv, err)
@@ -372,12 +423,23 @@ func resolveBinary(bridgeType string) (string, error) {
 		return binEnv, nil
 	}
 
+	// 空文字の設定は unset と同じく PATH fallback 扱いだが、文言は出し分ける (issue #82)。
+	envState := "unset"
+	if set {
+		envState = "set to an empty string"
+	}
+	if policy == binPolicyRequire {
+		return "", fmt.Errorf("%s is required but %s (%s=%s); refusing PATH fallback", envVar, envState, binPolicyEnv, policy)
+	}
 	path, err := exec.LookPath(bridgeType)
 	if err != nil {
 		return "", fmt.Errorf("%s not found in PATH. Set %s or add %s to PATH", bridgeType, envVar, bridgeType)
 	}
 	if err := checkBridgeBinaryName(path); err != nil {
 		return "", fmt.Errorf("%s resolved to %q: %w", bridgeType, path, err)
+	}
+	if policy == binPolicyWarn {
+		fmt.Fprintf(os.Stderr, "warning: %s is %s; falling back to PATH binary %s (%s=%s)\n", envVar, envState, path, binPolicyEnv, policy)
 	}
 	return path, nil
 }
