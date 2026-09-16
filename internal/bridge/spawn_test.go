@@ -208,6 +208,75 @@ func TestLinkLegacyLogPath(t *testing.T) {
 	if !ownedBySelf(fi) {
 		t.Errorf("ownedBySelf(own file) = false")
 	}
+
+	// 他者所有 regular file → 触らない (ownedBySelf 差し替えで再現)
+	os.Remove(legacy)
+	if err := os.WriteFile(legacy, []byte("someone else\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubOwnedBySelf(t, false)
+	linkLegacyLogPath("h", newLog)
+	if data, err := os.ReadFile(legacy); err != nil || string(data) != "someone else\n" {
+		t.Errorf("other-owned regular file must be left untouched: (%q, %v)", data, err)
+	}
+	if fi, err := os.Lstat(legacy); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("other-owned regular file must not be replaced by symlink: (%v, %v)", fi, err)
+	}
+}
+
+// stubOwnedBySelf は ownedBySelf を固定値に差し替える (uid を変えられないテスト用)。
+func stubOwnedBySelf(t *testing.T, v bool) {
+	t.Helper()
+	prev := ownedBySelf
+	ownedBySelf = func(os.FileInfo) bool { return v }
+	t.Cleanup(func() { ownedBySelf = prev })
+}
+
+// TestLinkLegacyLogPathExistingBackup: .pre-migration が既にあるとき上書きせず timestamp 付き suffix に
+// 退避する。timestamp 付きも既にあれば旧ログに触らない (issue #72)。
+func TestLinkLegacyLogPathExistingBackup(t *testing.T) {
+	dir := t.TempDir()
+	prev := legacyLogDir
+	legacyLogDir = dir
+	t.Cleanup(func() { legacyLogDir = prev })
+	prevNow := nowFunc
+	nowFunc = func() time.Time { return time.Date(2026, 9, 17, 1, 2, 3, 0, time.FixedZone("JST", 9*3600)) }
+	t.Cleanup(func() { nowFunc = prevNow })
+
+	newLog := filepath.Join(t.TempDir(), "bridge-h.out.log")
+	legacy := state.LegacyBridgeLogPath(dir, "h")
+	backup := legacy + ".pre-migration"
+	stamped := backup + ".20260916T160203Z"
+
+	writeFile := func(p, data string) {
+		t.Helper()
+		if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertContent := func(p, want string) {
+		t.Helper()
+		if data, err := os.ReadFile(p); err != nil || string(data) != want {
+			t.Errorf("%s = (%q, %v), want %q", p, data, err, want)
+		}
+	}
+
+	writeFile(backup, "first backup\n")
+	writeFile(legacy, "second log\n")
+	linkLegacyLogPath("h", newLog)
+	assertContent(backup, "first backup\n")
+	assertContent(stamped, "second log\n")
+	if target, err := os.Readlink(legacy); err != nil || target != newLog {
+		t.Fatalf("readlink = (%q, %v), want %q", target, err, newLog)
+	}
+
+	// 同一秒内の再実行で timestamp 付きも衝突 → 旧ログに触らない
+	os.Remove(legacy)
+	writeFile(legacy, "third log\n")
+	linkLegacyLogPath("h", newLog)
+	assertContent(legacy, "third log\n")
+	assertContent(backup, "first backup\n")
+	assertContent(stamped, "second log\n")
 }
 
 // TestResolveOrphanLogPath: sync が orphan に記録する log_path の解決順 (issue #54)。
@@ -250,6 +319,11 @@ func TestResolveOrphanLogPath(t *testing.T) {
 	}
 	if got := resolve(); got != legacy {
 		t.Errorf("only legacy exists: got %q, want %q", got, legacy)
+	}
+	// 以降は他者所有扱いのまま (新パス優先のケースなので所有者判定に依存しない)。復元は t.Cleanup
+	stubOwnedBySelf(t, false)
+	if got := resolve(); got != newPath {
+		t.Errorf("legacy is other-owned regular file: got %q, want new path %q (must not adopt)", got, newPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
 		t.Fatal(err)

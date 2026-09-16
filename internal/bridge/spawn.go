@@ -297,7 +297,9 @@ var legacyLogDir = "/tmp"
 //   - 存在しない            → symlink を作成
 //   - 既に symlink          → Remove → Symlink で張り替え (symlink を辿った書き込みはしない)
 //   - 自分所有の regular file → 旧バイナリの spawn が残したログ。<legacy>.pre-migration に退避してから
-//     symlink を作成 (既存 install でも互換 symlink が張られるように。PR #71 review Critical 1)
+//     symlink を作成 (既存 install でも互換 symlink が張られるように。PR #71 review Critical 1)。
+//     .pre-migration が既にある (過去の退避残骸) 場合は上書きせず .pre-migration.<UTC timestamp> に
+//     退避する (issue #72)。それも既にあれば触らない (warning のみ)
 //   - 他者所有の regular file → 触らない (warning のみ)。/tmp は sticky bit なので Rename / Remove は
 //     いずれにせよ EPERM になる
 //
@@ -315,8 +317,8 @@ func linkLegacyLogPath(handle, logPath string) {
 				fmt.Fprintf(os.Stderr, "warning: legacy log path %s exists and is not owned by us; leaving it untouched (new log: %s)\n", legacy, logPath)
 				return
 			}
-			backup := legacy + ".pre-migration"
-			if err := os.Rename(legacy, backup); err != nil {
+			backup, err := moveLegacyLogAside(legacy)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: cannot move legacy log %s aside: %v (new log: %s)\n", legacy, err, logPath)
 				return
 			}
@@ -336,9 +338,37 @@ func linkLegacyLogPath(handle, logPath string) {
 	fmt.Fprintf(os.Stderr, "note: %s is deprecated and now a symlink to %s (will be removed in a future minor release)\n", legacy, logPath)
 }
 
+// moveLegacyLogAside は旧ログを退避して退避先を返す。<legacy>.pre-migration が無ければそこへ、あれば
+// 既存 backup を無言上書きしないよう <legacy>.pre-migration.<UTC timestamp> へ退避する (issue #72)。
+// timestamp 付きも既にある (同一秒内の再実行) 場合はエラー。
+// os.Rename は宛先を上書きするため、存在確認との間に backup が作られると上書きされる (TOCTOU)。
+// os.Link は宛先が既にあれば必ず失敗するので、Link → Remove の 2 手順で退避する (PR #81 review)。
+func moveLegacyLogAside(legacy string) (string, error) {
+	backup := legacy + ".pre-migration"
+	err := os.Link(legacy, backup)
+	if errors.Is(err, os.ErrExist) {
+		stamped := backup + "." + nowFunc().UTC().Format("20060102T150405Z")
+		if err = os.Link(legacy, stamped); err == nil {
+			fmt.Fprintf(os.Stderr, "note: %s already exists; keeping it and using %s instead\n", backup, stamped)
+		}
+		backup = stamped
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := os.Remove(legacy); err != nil {
+		os.Remove(backup)
+		return "", err
+	}
+	return backup, nil
+}
+
+// nowFunc は moveLegacyLogAside の timestamp 用。テストが固定時刻に差し替える。
+var nowFunc = time.Now
+
 // ownedBySelf は fi のファイルが現在の uid 所有かを返す。uid が取れない環境 (non-unix) では false
-// (= 触らない側に倒す)。
-func ownedBySelf(fi os.FileInfo) bool {
+// (= 触らない側に倒す)。テストは uid を変えられないため他者所有ケースを package var 差し替えで再現する。
+var ownedBySelf = func(fi os.FileInfo) bool {
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	return ok && st.Uid == uint32(os.Getuid())
 }

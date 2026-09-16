@@ -122,8 +122,9 @@ func runSync(dryRun bool) error {
 // orphan は agenthubctl 以外 (旧バイナリ・手動起動) で spawn されている可能性があるので、
 // 新パスが存在すればそれ、無ければ旧 /tmp パスが regular file として存在すればそれ (deprecation
 // warning)、どちらも無ければ新パスを記録する (`bridge logs` は stat エラーで場所を明示する)。
-// 旧パスは Lstat で見て symlink なら採用しない (/tmp 上の他者 symlink を bridges.json に永続化して
-// `bridge logs` / `status` に他者の指すファイルを表示させない。spawn 側 linkLegacyLogPath と対称)。
+// 旧パスは Lstat で見て symlink または他者所有の regular file なら採用しない (/tmp 上の他者のファイルを
+// bridges.json に永続化して `bridge logs` / `status` に表示させない。spawn 側 linkLegacyLogPath と対称、
+// issue #72)。
 func resolveOrphanLogPath(handle string) (string, error) {
 	newPath, err := state.BridgeLogPath(handle)
 	if err != nil {
@@ -136,6 +137,10 @@ func resolveOrphanLogPath(handle string) (string, error) {
 	if fi, err := os.Lstat(legacy); err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
 			fmt.Fprintf(os.Stderr, "warning: @%s: ignoring deprecated log path %s because it is a symlink; recording %s\n", handle, legacy, newPath)
+			return newPath, nil
+		}
+		if !ownedBySelf(fi) {
+			fmt.Fprintf(os.Stderr, "warning: @%s: ignoring deprecated log path %s because it is not owned by us; recording %s\n", handle, legacy, newPath)
 			return newPath, nil
 		}
 		fmt.Fprintf(os.Stderr, "warning: @%s: adopting deprecated log path %s (restart the bridge to move it under AGENT_HUB_HOME/logs)\n", handle, legacy)
