@@ -24,8 +24,12 @@
 //	AGENT_HUB_TENANT                optional  テナント ID
 //	GITHUB_PAT                      required  GitHub Personal Access Token
 //	AGENT_HUB_USER                  optional  handle override (pat モード) / handle (trust モード)
-//	AGENT_HUB_BRIDGE_CLAUDE2_BIN    optional  bridge-claude2 バイナリパス
-//	AGENT_HUB_{TYPE}_BIN            optional  任意 bridge type のバイナリパス (例: AGENT_HUB_BRIDGE_CODEX2_BIN)
+//	AGENT_HUB_BRIDGE_CLAUDE2_BIN    optional  bridge-claude2 バイナリの絶対パス (AGENT_HUB_BIN_POLICY=require のときは必須)
+//	AGENT_HUB_{TYPE}_BIN            optional  任意 bridge type のバイナリの絶対パス (例: AGENT_HUB_BRIDGE_CODEX2_BIN;
+//	                                          AGENT_HUB_BIN_POLICY=require のときは必須)。'~' / '$' を含む値と
+//	                                          実在しないパスは policy に関係なくエラー
+//	AGENT_HUB_BIN_POLICY            optional  *_BIN 未設定時の PATH fallback: path (既定) / warn (警告して fallback) /
+//	                                          require (fallback せず失敗)
 package main
 
 import (

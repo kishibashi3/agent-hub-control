@@ -483,3 +483,77 @@ func TestResolveBinaryRejectsNonBridgeBasename(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveBinaryBinPolicy: AGENT_HUB_BIN_POLICY による PATH fallback 制御と、policy に
+// 関係なく拒否する *_BIN の値 (未展開の ~ / $、実在しないパス) を検証する (issue #74)。
+func TestResolveBinaryBinPolicy(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "bridge-claude2")
+	if err := os.WriteFile(good, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	const envVar = "AGENT_HUB_BRIDGE_CLAUDE2_BIN"
+
+	t.Run("PATH fallback by policy", func(t *testing.T) {
+		cases := []struct {
+			policy  string
+			wantErr string // 空なら成功 (PATH の good を返す)
+		}{
+			{"", ""},
+			{"path", ""},
+			{"warn", ""},
+			{"require", envVar + " is required"},
+			{"Require", "AGENT_HUB_BIN_POLICY=\"Require\" is invalid"},
+		}
+		for _, tc := range cases {
+			t.Run("policy="+tc.policy, func(t *testing.T) {
+				t.Setenv("AGENT_HUB_BIN_POLICY", tc.policy)
+				t.Setenv(envVar, "")
+				t.Setenv("PATH", dir)
+				got, err := resolveBinary("bridge-claude2")
+				if tc.wantErr == "" {
+					if err != nil || got != good {
+						t.Errorf("resolveBinary = (%q, %v), want (%q, nil)", got, err, good)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("resolveBinary err = %v, want containing %q", err, tc.wantErr)
+				}
+			})
+		}
+	})
+
+	t.Run("require accepts an explicit env path", func(t *testing.T) {
+		t.Setenv("AGENT_HUB_BIN_POLICY", "require")
+		t.Setenv(envVar, good)
+		t.Setenv("PATH", "")
+		got, err := resolveBinary("bridge-claude2")
+		if err != nil || got != good {
+			t.Errorf("resolveBinary = (%q, %v), want (%q, nil)", got, err, good)
+		}
+	})
+
+	bad := []struct {
+		name, value, wantErr string
+	}{
+		{"leading tilde", "~/.agent-hub/bin/bridge-claude2", "unexpanded"},
+		{"leading $HOME", "$HOME/.agent-hub/bin/bridge-claude2", "unexpanded"},
+		{"embedded ${HOME}", dir + "/${HOME}/bridge-claude2", "unexpanded"},
+		{"embedded tilde", dir + "/~/bridge-claude2", "unexpanded"},
+		{"nonexistent path", filepath.Join(dir, "missing", "bridge-claude2"), "not found"},
+	}
+	for _, policy := range []string{"", "path", "warn", "require"} {
+		for _, tc := range bad {
+			t.Run("policy="+policy+"/"+tc.name, func(t *testing.T) {
+				t.Setenv("AGENT_HUB_BIN_POLICY", policy)
+				t.Setenv(envVar, tc.value)
+				t.Setenv("PATH", dir) // PATH に good があっても fallback しない
+				_, err := resolveBinary("bridge-claude2")
+				if err == nil || !strings.Contains(err.Error(), envVar) || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("resolveBinary err = %v, want containing %q and %q", err, envVar, tc.wantErr)
+				}
+			})
+		}
+	}
+}
