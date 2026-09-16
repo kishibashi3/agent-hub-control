@@ -1,12 +1,15 @@
 package state_test
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -297,7 +300,12 @@ func TestIsRunningEmptyArgvUnreadableExe(t *testing.T) {
 		if _, err := state.ReadExe(pid); err == nil {
 			continue
 		}
-		if ok, err := state.IsBridgeProcess(pid, "alpha"); err != nil || ok {
+		ok, err := state.IsBridgeProcess(pid, "alpha")
+		if err != nil && pidVanished(pid, err) {
+			// 選定から assert までの間に短命 PID (kworker 等) が消えた。回帰の有無は判定できないので skip (issue #73)
+			t.Skipf("pid %d vanished before assert: %v", pid, err)
+		}
+		if err != nil || ok {
 			t.Errorf("pid %d (empty argv, unreadable exe): IsBridgeProcess = (%v, %v), want (false, nil)", pid, ok, err)
 		}
 		if e := (&state.Entry{Handle: "alpha", PID: pid}); e.IsRunning() {
@@ -306,6 +314,17 @@ func TestIsRunningEmptyArgvUnreadableExe(t *testing.T) {
 		return
 	}
 	t.Skip("no live pid with empty argv and unreadable exe on this host")
+}
+
+// pidVanished は err が「PID が消えた」ことによるものかを返す。/proc/<pid> の読み出しは消滅後 ENOENT、
+// open 済み fd からの read 中に消えると ESRCH になる。err の種類で判別できなくても /proc/<pid> 自体が
+// 無ければ消滅とみなす。
+func pidVanished(pid int, err error) bool {
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	_, statErr := os.Stat(fmt.Sprintf("/proc/%d", pid))
+	return errors.Is(statErr, fs.ErrNotExist)
 }
 
 // TestIsRunningEmptyArgvNonBridgeExe: cmdline が空で生きていても exe が bridge バイナリでなければ
