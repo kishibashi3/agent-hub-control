@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -125,6 +126,54 @@ func TestWriteEnvScaffoldCreatesWith0600(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("env scaffold perm = %o, want 0600", perm)
+	}
+}
+
+// TestWriteEnvScaffoldSystemScopeChownViaEuidSeam: the system-scope chown hand-off goes through
+// c.geteuid() (issue #69), so injecting root makes the scaffold take the chown branch and a
+// non-root injection skips it. GID is a supplementary group of the test process (chown to
+// own uid + a member group needs no privilege), so the file's gid shows whether the branch ran.
+func TestWriteEnvScaffoldSystemScopeChownViaEuidSeam(t *testing.T) {
+	primary := os.Getgid()
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := -1
+	for _, g := range groups {
+		if g != primary {
+			target = g
+			break
+		}
+	}
+	if target < 0 {
+		t.Skipf("process has no supplementary group besides primary gid %d", primary)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		euid    int
+		wantGID int
+	}{
+		{"root takes chown branch", 0, target},
+		{"non-root skips chown branch", 1000, primary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			envFile := filepath.Join(t.TempDir(), "agent-hub", "fleet.env")
+			c := &Config{euidOverride: asEuid(tc.euid), Scope: ScopeSystem, EnvFile: envFile, UID: os.Getuid(), GID: target}
+			if err := c.writeEnvScaffold("PATH=/opt/bin\n"); err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range []string{filepath.Dir(envFile), envFile} {
+				info, err := os.Stat(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if gid := int(info.Sys().(*syscall.Stat_t).Gid); gid != tc.wantGID {
+					t.Errorf("%s gid = %d, want %d", p, gid, tc.wantGID)
+				}
+			}
+		})
 	}
 }
 
