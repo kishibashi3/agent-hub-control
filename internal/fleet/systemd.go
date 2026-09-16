@@ -381,7 +381,7 @@ func (c *Config) writeEnvScaffold(content string) error {
 	if err := os.WriteFile(c.EnvFile, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write env scaffold: %w", err)
 	}
-	if c.Scope == ScopeSystem && os.Geteuid() == 0 {
+	if c.Scope == ScopeSystem && c.geteuid() == 0 {
 		_ = os.Chown(dir, c.UID, c.GID)
 		_ = os.Chown(c.EnvFile, c.UID, c.GID)
 	}
