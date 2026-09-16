@@ -424,14 +424,28 @@ func resolveBinary(bridgeType string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if binEnv := os.Getenv(envVar); binEnv != "" {
+	binEnv, set := os.LookupEnv(envVar)
+	if binEnv != "" {
 		// systemd EnvironmentFile は ~ も $VAR も展開しないので、未展開のまま届いた値は
 		// policy に関係なく拒否する。shell 経由と systemd 経由で挙動が変わるためコードでも展開しない。
 		if strings.ContainsAny(binEnv, "~$") {
 			return "", fmt.Errorf("%s=%q contains an unexpanded '~' or '$' (systemd EnvironmentFile does not expand them); use an absolute path", envVar, binEnv)
 		}
-		if _, err := os.Stat(binEnv); err != nil {
+		// 相対パスは agenthubctl の cwd 基準で解決され、systemd 経由と shell 経由で別の binary を
+		// 指しうるので、policy に関係なく拒否する (issue #82)。
+		if !filepath.IsAbs(binEnv) {
+			return "", fmt.Errorf("%s=%q is a relative path (resolved against the current directory, which differs between systemd and shell); use an absolute path", envVar, binEnv)
+		}
+		fi, err := os.Stat(binEnv)
+		if err != nil {
 			return "", fmt.Errorf("%s=%q not found: %w", envVar, binEnv, err)
+		}
+		// ディレクトリや実行権限のないファイルは Start() まで失敗が遅れ env 名が出ないので、ここで弾く。
+		if !fi.Mode().IsRegular() {
+			return "", fmt.Errorf("%s=%q is not a regular file (mode %s)", envVar, binEnv, fi.Mode().Type())
+		}
+		if fi.Mode().Perm()&0o111 == 0 {
+			return "", fmt.Errorf("%s=%q is not executable (mode %s)", envVar, binEnv, fi.Mode().Perm())
 		}
 		if err := checkBridgeBinaryName(binEnv); err != nil {
 			return "", fmt.Errorf("%s=%q: %w", envVar, binEnv, err)
@@ -439,8 +453,13 @@ func resolveBinary(bridgeType string) (string, error) {
 		return binEnv, nil
 	}
 
+	// 空文字の設定は unset と同じく PATH fallback 扱いだが、文言は出し分ける (issue #82)。
+	envState := "unset"
+	if set {
+		envState = "set to an empty string"
+	}
 	if policy == binPolicyRequire {
-		return "", fmt.Errorf("%s is required (%s=%s); refusing PATH fallback", envVar, binPolicyEnv, policy)
+		return "", fmt.Errorf("%s is required but %s (%s=%s); refusing PATH fallback", envVar, envState, binPolicyEnv, policy)
 	}
 	path, err := exec.LookPath(bridgeType)
 	if err != nil {
@@ -450,7 +469,7 @@ func resolveBinary(bridgeType string) (string, error) {
 		return "", fmt.Errorf("%s resolved to %q: %w", bridgeType, path, err)
 	}
 	if policy == binPolicyWarn {
-		fmt.Fprintf(os.Stderr, "warning: %s is unset; falling back to PATH binary %s (%s=%s)\n", envVar, path, binPolicyEnv, policy)
+		fmt.Fprintf(os.Stderr, "warning: %s is %s; falling back to PATH binary %s (%s=%s)\n", envVar, envState, path, binPolicyEnv, policy)
 	}
 	return path, nil
 }
