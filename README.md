@@ -147,7 +147,7 @@ Debian 標準の `~/.bashrc` は先頭で `case $- in *i*) ;; *) return;; esac` 
 timer 自体は `active (waiting)` に見えるので気づけない（2026-07-29 / 2026-09-13 の 2 度の
 全 bridge 復旧不能の原因, issue #47）。
 
-そのため生成 unit は shell を経由せず `EnvironmentFile=~/.agent-hub/fleet.env` から env を
+そのため生成 unit は shell を経由せず `EnvironmentFile=/home/<user>/.agent-hub/fleet.env`（install 時の絶対パス）から env を
 読み、`ExecStart` は agenthubctl の絶対 path を直接叩く。`fleet.env` には **手で spawn した
 bridge が持っている env をそのまま**書く。稼働中 bridge から写すのが確実:
 
@@ -158,9 +158,35 @@ tr '\0' '\n' < /proc/<pid>/environ \
   | sed -E 's/^([A-Z_0-9]+)=(.*)$/\1="\2"/' >> ~/.agent-hub/fleet.env
 ```
 
-書式は `KEY="value"` 1 行 1 変数（systemd EnvironmentFile 互換。`export` や `$VAR` 展開は不可）。
+書式は `KEY="value"` 1 行 1 変数（systemd EnvironmentFile 互換。`export` や `$VAR` / `~` の展開は不可）。
+パスは**必ず絶対パス**で書く（例: `AGENT_HUB_BRIDGE_CLAUDE2_BIN=/home/<user>/.agent-hub/bin/bridge-claude2`）。
+`AGENT_HUB_{TYPE}_BIN` の値に `~` / `$` が含まれる場合や実在しないパスの場合、agenthubctl は
+`AGENT_HUB_BIN_POLICY` に関係なく spawn を失敗させる。
 `AGENT_HUB_BRIDGE_CLAUDE2_BIN` のような bridge binary の場所、`claude` CLI を含む `PATH`
 （nvm / mise の bin）を忘れると spawn が fail-fast する。反映は次の watchdog tick（既定 3 分）。
+
+#### bridge binary の固定（`AGENT_HUB_BIN_POLICY`, issue #74）
+
+`AGENT_HUB_{TYPE}_BIN` が未設定のとき、agenthubctl は PATH から bridge binary を探す。PATH に
+開発用 build（`make install` 先など）があると、fleet がそれで黙って起動してしまう。
+`AGENT_HUB_BIN_POLICY` でこの fallback を制御する（spawn / start / restart / watchdog の全経路で有効）。
+
+| 値 | 動作 |
+|---|---|
+| 未設定 / `path` | 従来どおり PATH で探す |
+| `warn` | PATH で探し、stderr に `warning: AGENT_HUB_..._BIN is unset; falling back to PATH binary ...` を出す |
+| `require` | `AGENT_HUB_{TYPE}_BIN` が無ければ spawn を失敗させる（エラーに必要な env 名を出す） |
+
+上記以外の値はエラー。段階的な切り替え手順（fleet.env の編集は operator が実施）:
+
+1. `AGENT_HUB_BRIDGE_CLAUDE2_BIN=/home/<user>/.agent-hub/bin/bridge-claude2`（絶対パス）が fleet.env に
+   あり、`ls -l /home/<user>/.agent-hub/bin/bridge-claude2` で実在することを確認する。
+2. fleet.env に `AGENT_HUB_BIN_POLICY=warn` を追加する。
+3. 数回 timer が走ったあと、`journalctl --user -u agent-hub-fleet.service | grep 'falling back to PATH'`
+   が 0 件であること、稼働中 bridge の `/proc/<pid>/exe` が `/home/<user>/.agent-hub/bin/` を指すことを確認する。
+4. `AGENT_HUB_BIN_POLICY=require` に切り替える（切り戻しは `warn` に戻すだけ）。
+5. 一時的に手動で PATH の binary を使いたいときは、そのコマンドだけ
+   `AGENT_HUB_BIN_POLICY=path agenthubctl bridge spawn ...` のように上書きする。
 
 - **OS 検出**: Linux + systemd → `.service` + `.timer`、macOS → launchd LaunchAgent `.plist`。
 - **scope**: root（`sudo`）なら `/etc/systemd/system` の system-level（ログイン不要で boot-start）。
@@ -200,6 +226,7 @@ agenthubctl fleet status       # 導入状態・is-enabled/is-active・次回発
 | `GITHUB_PAT` | ✓ | GitHub PAT（pat モード） |
 | `AGENT_HUB_TENANT` | | テナント ID |
 | `AGENT_HUB_USER` | | handle override |
-| `AGENT_HUB_{TYPE}_BIN` | | bridge type ごとのバイナリパス（例: `AGENT_HUB_BRIDGE_CLAUDE2_BIN`） |
+| `AGENT_HUB_{TYPE}_BIN` | `require` 時 ✓ | bridge type ごとのバイナリの絶対パス（例: `AGENT_HUB_BRIDGE_CLAUDE2_BIN`）。`~` / `$` を含む値・実在しないパスはエラー |
+| `AGENT_HUB_BIN_POLICY` | | `*_BIN` 未設定時の PATH fallback: `path`（既定）/ `warn` / `require` |
 | `AGENT_HUB_HOME` | | state ディレクトリ（既定 `~/.agent-hub`） |
 </content>

@@ -131,7 +131,15 @@ func TestRenderEnvScaffold(t *testing.T) {
 		"PATH=/opt/bin:/usr/bin",
 		"# GITHUB_PAT=",
 		"mode 0600",
+		"# AGENT_HUB_BRIDGE_CLAUDE2_BIN=" + c.Home + "/.agent-hub/bin/bridge-claude2",
+		"# AGENT_HUB_BIN_POLICY=require",
 	})
+	// 雛形の例は絶対パスのみ (systemd EnvironmentFile は ~ / $HOME を展開しない, issue #74)。
+	for _, line := range strings.Split(out, "\n") {
+		if i := strings.Index(line, "="); i >= 0 && strings.ContainsAny(line[i+1:], "~$") {
+			t.Errorf("env scaffold example is not an absolute path: %q", line)
+		}
+	}
 }
 
 // TestNoHardcodedMachinePaths is the completion-condition guard: rendered output must

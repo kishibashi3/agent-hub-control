@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -556,4 +557,163 @@ func TestResolveBinaryRejectsNonBridgeBasename(t *testing.T) {
 			t.Errorf("expected symlink target rejection, got %v", err)
 		}
 	})
+}
+
+// TestResolveBinaryBinPolicy: AGENT_HUB_BIN_POLICY による PATH fallback 制御と、policy に
+// 関係なく拒否する *_BIN の値 (未展開の ~ / $、実在しないパス) を検証する (issue #74)。
+func TestResolveBinaryBinPolicy(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "bridge-claude2")
+	if err := os.WriteFile(good, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	const envVar = "AGENT_HUB_BRIDGE_CLAUDE2_BIN"
+	dirBin := filepath.Join(t.TempDir(), "bridge-claude2")
+	if err := os.Mkdir(dirBin, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	noExec := filepath.Join(t.TempDir(), "bridge-claude2")
+	if err := os.WriteFile(noExec, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	t.Run("PATH fallback by policy", func(t *testing.T) {
+		cases := []struct {
+			policy  string
+			wantErr string // 空なら成功 (PATH の good を返す)
+		}{
+			{"", ""},
+			{"path", ""},
+			{"warn", ""},
+			{"require", envVar + " is required"},
+			{"Require", "AGENT_HUB_BIN_POLICY=\"Require\" is invalid"},
+		}
+		for _, tc := range cases {
+			t.Run("policy="+tc.policy, func(t *testing.T) {
+				t.Setenv("AGENT_HUB_BIN_POLICY", tc.policy)
+				t.Setenv(envVar, "")
+				t.Setenv("PATH", dir)
+				got, err := resolveBinary("bridge-claude2")
+				if tc.wantErr == "" {
+					if err != nil || got != good {
+						t.Errorf("resolveBinary = (%q, %v), want (%q, nil)", got, err, good)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("resolveBinary err = %v, want containing %q", err, tc.wantErr)
+				}
+			})
+		}
+	})
+
+	t.Run("require accepts an explicit env path", func(t *testing.T) {
+		t.Setenv("AGENT_HUB_BIN_POLICY", "require")
+		t.Setenv(envVar, good)
+		t.Setenv("PATH", "")
+		got, err := resolveBinary("bridge-claude2")
+		if err != nil || got != good {
+			t.Errorf("resolveBinary = (%q, %v), want (%q, nil)", got, err, good)
+		}
+	})
+
+	bad := []struct {
+		name, value, wantErr string
+	}{
+		{"leading tilde", "~/.agent-hub/bin/bridge-claude2", "unexpanded"},
+		{"leading $HOME", "$HOME/.agent-hub/bin/bridge-claude2", "unexpanded"},
+		{"embedded ${HOME}", dir + "/${HOME}/bridge-claude2", "unexpanded"},
+		{"embedded tilde", dir + "/~/bridge-claude2", "unexpanded"},
+		{"nonexistent path", filepath.Join(dir, "missing", "bridge-claude2"), "not found"},
+		// issue #82: 相対パス / ディレクトリ / 実行権限なし
+		{"relative path", "bin/bridge-claude2", "relative path"},
+		{"dot relative path", "./bridge-claude2", "relative path"},
+		{"directory", dirBin, "not a regular file"},
+		{"not executable", noExec, "not executable"},
+	}
+	for _, policy := range []string{"", "path", "warn", "require"} {
+		for _, tc := range bad {
+			t.Run("policy="+policy+"/"+tc.name, func(t *testing.T) {
+				t.Setenv("AGENT_HUB_BIN_POLICY", policy)
+				t.Setenv(envVar, tc.value)
+				t.Setenv("PATH", dir) // PATH に good があっても fallback しない
+				_, err := resolveBinary("bridge-claude2")
+				if err == nil || !strings.Contains(err.Error(), envVar) || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("resolveBinary err = %v, want containing %q and %q", err, envVar, tc.wantErr)
+				}
+			})
+		}
+	}
+}
+
+// TestResolveBinaryEmptyVsUnset: *_BIN が空文字のときと unset のときで、warn / require の文言を
+// 出し分ける (issue #82)。どちらも PATH fallback の扱い自体は同じ。
+func TestResolveBinaryEmptyVsUnset(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "bridge-claude2")
+	if err := os.WriteFile(good, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	const envVar = "AGENT_HUB_BRIDGE_CLAUDE2_BIN"
+
+	cases := []struct {
+		name  string
+		unset bool
+		want  string
+		not   string
+	}{
+		{"unset", true, envVar + " is unset", "empty string"},
+		{"empty", false, envVar + " is set to an empty string", "unset"},
+	}
+	setEnv := func(t *testing.T, unset bool) {
+		t.Setenv(envVar, "") // 終了時に元の値へ戻すため先に Setenv する
+		if unset {
+			os.Unsetenv(envVar)
+		}
+	}
+	for _, tc := range cases {
+		t.Run("warn/"+tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_HUB_BIN_POLICY", "warn")
+			t.Setenv("PATH", dir)
+			setEnv(t, tc.unset)
+			var got string
+			var err error
+			stderr := captureStderr(t, func() { got, err = resolveBinary("bridge-claude2") })
+			if err != nil || got != good {
+				t.Fatalf("resolveBinary = (%q, %v), want (%q, nil)", got, err, good)
+			}
+			if !strings.Contains(stderr, "warning: "+tc.want) || strings.Contains(stderr, tc.not) {
+				t.Errorf("stderr = %q, want containing %q and not %q", stderr, "warning: "+tc.want, tc.not)
+			}
+		})
+		t.Run("require/"+tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_HUB_BIN_POLICY", "require")
+			t.Setenv("PATH", dir)
+			setEnv(t, tc.unset)
+			_, err := resolveBinary("bridge-claude2")
+			wantReq := strings.Replace(tc.want, " is ", " is required but ", 1)
+			if err == nil || !strings.Contains(err.Error(), wantReq) || strings.Contains(err.Error(), tc.not) {
+				t.Errorf("resolveBinary err = %v, want containing %q and not %q", err, wantReq, tc.not)
+			}
+		})
+	}
+}
+
+// captureStderr は fn 実行中に os.Stderr へ書かれた内容を返す。
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+	fn()
+	w.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	return string(b)
 }
