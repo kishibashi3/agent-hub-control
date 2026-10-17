@@ -444,7 +444,8 @@ func readyPatternFor(bridgeType string) string {
 	switch bridgeType {
 	case "bridge-tmux":
 		return "polling inbox"
-	case "bridge-claude2":
+	case "bridge-claude2", "bridge-codex2":
+		// Go 実装系 bridge は runHubSession の register 完了ログを ready シグナルとする (issue #86)
 		return "registered and listening"
 	default:
 		return "listening on inbox"

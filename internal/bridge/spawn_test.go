@@ -557,3 +557,21 @@ func TestResolveBinaryRejectsNonBridgeBasename(t *testing.T) {
 		}
 	})
 }
+
+func TestReadyPatternFor(t *testing.T) {
+	cases := []struct {
+		bridgeType string
+		want       string
+	}{
+		{"bridge-claude2", "registered and listening"},
+		{"bridge-codex2", "registered and listening"}, // issue #86
+		{"bridge-tmux", "polling inbox"},
+		{"bridge-gemini", "listening on inbox"},
+		{"bridge-claude", "listening on inbox"},
+	}
+	for _, c := range cases {
+		if got := readyPatternFor(c.bridgeType); got != c.want {
+			t.Errorf("readyPatternFor(%q) = %q, want %q", c.bridgeType, got, c.want)
+		}
+	}
+}
