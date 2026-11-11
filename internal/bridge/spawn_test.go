@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 )
 
@@ -76,8 +77,9 @@ func TestSpawnBridgeArgs(t *testing.T) {
 	}
 	t.Setenv("AGENT_HUB_BRIDGE_CLAUDE2_BIN", binCopy)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("AGENT_HUB_HOME", t.TempDir()) // 実 state (~/.agent-hub/state/bridges.json) と logs を汚さない (issue #49 / #54)
-	t.Setenv(state.BridgeLogDirEnv, "")     // ホスト env の上書きで実ログディレクトリを指さないように
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // spawn は bridge config も書く (issue #90)。実 ~/.config を汚さない
+	t.Setenv("AGENT_HUB_HOME", t.TempDir())  // 実 state (~/.agent-hub/state/bridges.json) と logs を汚さない (issue #49 / #54)
+	t.Setenv(state.BridgeLogDirEnv, "")      // ホスト env の上書きで実ログディレクトリを指さないように
 	legacyDir := t.TempDir()
 	prevLegacy := legacyLogDir
 	legacyLogDir = legacyDir // 互換 symlink も /tmp ではなく tempdir に (issue #54)
@@ -161,6 +163,18 @@ func TestSpawnBridgeArgs(t *testing.T) {
 	legacy := state.LegacyBridgeLogPath(legacyDir, handle)
 	if target, err := os.Readlink(legacy); err != nil || target != logPath {
 		t.Errorf("legacy symlink %s -> (%q, %v), want -> %q", legacy, target, err, logPath)
+	}
+
+	// spawn で作った bridge は config を持つ (issue #90: config が無いと fleet `start --all` が起こさない)。
+	cfg, err := bridgecfg.Load(handle)
+	if err != nil {
+		t.Fatalf("load bridge config: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("spawn did not save a bridge config (issue #90)")
+	}
+	if cfg.Workdir != workdir || cfg.Model != "test-model-x" || cfg.BridgeType != "bridge-claude2" {
+		t.Errorf("bridge config = %+v, want Workdir=%s Model=test-model-x BridgeType=bridge-claude2", cfg, workdir)
 	}
 }
 

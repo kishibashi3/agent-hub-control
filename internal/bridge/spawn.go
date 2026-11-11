@@ -37,7 +37,7 @@ func NewSpawnCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "spawn [<handle>]",
-		Short: "Spawn a bridge worker",
+		Short: "Spawn a bridge worker (saves a bridge config if none exists, so fleet can revive it)",
 		// Accept 0 args (--participant flag) or 1 positional arg (handle).
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -278,6 +278,24 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 			rollbackUnlock()
 		}
 		return fmt.Errorf("timeout waiting for @%s to become ready (pid=%d killed). Check log: %s", participant, pid, logPath)
+	}
+
+	// 走っている bridge が config を持たない状態を作らない (issue #90)。fleet の `start --all` は
+	// config にある handle しか起こさないので、ここで記録しないと死んだあと誰も起こさない。
+	// 既存 config は書き換えない。プロセスは既に ready なので止めずにエラーで知らせる。
+	created, cfgErr := ensureConfig(bridgecfg.BridgeConfig{
+		Handle:      participant,
+		Workdir:     wd,
+		Tenant:      tenant,
+		BridgeType:  bridgeType,
+		DisplayName: displayName,
+		Model:       model.ID,
+	})
+	if cfgErr != nil {
+		return fmt.Errorf("@%s is running (pid=%d) but saving its bridge config failed: %w (fleet `bridge start --all` will NOT revive it until a config exists)", participant, pid, cfgErr)
+	}
+	if created {
+		fmt.Fprintf(os.Stderr, "saved bridge config for @%s (fleet `bridge start --all` can now revive it)\n", participant)
 	}
 
 	fmt.Printf("ok pid=%d\n", pid)

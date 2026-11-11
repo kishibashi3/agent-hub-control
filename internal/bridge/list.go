@@ -4,6 +4,8 @@ package bridge
 import (
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/kishibashi3/agent-hub-control/internal/state"
@@ -42,6 +44,7 @@ func runList() error {
 	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTYPE\tTENANT\tMODEL\tWORKDIR\tSTARTED")
 
 	deadCount := 0
+	var runningHandles []string // config 有無の検査対象 (issue #90)
 	for _, e := range st.Bridges {
 		status := "running"
 		pid := e.PID
@@ -57,12 +60,16 @@ func runList() error {
 				deadCount++
 			}
 		}
+		if status == "running" {
+			runningHandles = append(runningHandles, e.Handle)
+		}
 		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
 			e.Handle, status, pid, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), modelDisplay(e.Model), e.Workdir, e.StartedAt)
 	}
 
 	// state に無い稼働中プロセスを untracked として併記する。
 	for _, o := range orphans {
+		runningHandles = append(runningHandles, o.handle)
 		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
 			o.handle, "untracked", o.pid, bridgeTypeOrDefault(o.bridgeType), tenantOrDefault(o.tenant), modelDisplay(o.model), o.workdir, "(running)")
 	}
@@ -81,6 +88,25 @@ func runList() error {
 		fmt.Fprintf(os.Stderr,
 			"warning: %d dead entr(ies) in state. Run `agenthubctl bridge prune` to remove them (or `bridge sync` for both).\n",
 			deadCount)
+	}
+
+	// 稼働中なのに bridge config が無い handle は、死んだら fleet (`bridge start --all`) が起こさない (issue #90)。
+	have, cerr := configuredHandles()
+	if cerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot read bridge configs: %v\n", cerr)
+	} else {
+		var noCfg []string
+		for _, h := range runningHandles {
+			if !have[h] {
+				noCfg = append(noCfg, "@"+h)
+			}
+		}
+		if len(noCfg) > 0 {
+			sort.Strings(noCfg)
+			fmt.Fprintf(os.Stderr,
+				"warning: %d running bridge(s) have no saved config and will NOT be revived by fleet (`bridge start --all`) if they die: %s. Run `agenthubctl bridge sync` to save their config.\n",
+				len(noCfg), strings.Join(noCfg, ", "))
+		}
 	}
 
 	return nil
