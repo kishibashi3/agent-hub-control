@@ -3,15 +3,19 @@
 // 双方向同期: bridges.json と実プロセスを突き合わせて整合させる
 //   - dead entry の削除（prune と同様）
 //   - bridges.json に存在しない実行中の bridge-claude2 プロセスを検出して entry を追加
+//   - 稼働中 (state 上の running / 取り込んだ orphan) で bridge config が無い handle に config を作る
+//     (issue #90: config が無いと fleet の `start --all` が死んだ bridge を起こさない)
 package bridge
 
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -21,14 +25,14 @@ func NewSyncCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Sync bridges.json with actual processes (prune dead + register orphans)",
+		Short: "Sync bridges.json with actual processes (prune dead + register orphans) and save missing bridge configs",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runSync(dryRun)
 		},
 	}
 
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would change without modifying bridges.json")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would change without modifying bridges.json or bridge configs")
 	return cmd
 }
 
@@ -65,11 +69,17 @@ func runSync(dryRun bool) error {
 		// 検出に失敗してもdead entryの削除は続行する
 	}
 
+	// ── 2b. config の無い稼働中 handle を収集 (issue #90) ────────────────
+	missingCfg, err := missingConfigs(st, orphans)
+	if err != nil {
+		return fmt.Errorf("check bridge configs: %w", err)
+	}
+
 	// ── 3. 変更内容を表示 ─────────────────────────────────────────────
-	changed := len(dead) > 0 || len(orphans) > 0
+	changed := len(dead) > 0 || len(orphans) > 0 || len(missingCfg) > 0
 
 	if !changed {
-		fmt.Println("bridges.json is in sync with running processes")
+		fmt.Println("bridges.json and bridge configs are in sync with running processes")
 		return nil
 	}
 
@@ -113,9 +123,62 @@ func runSync(dryRun bool) error {
 	}
 
 	if dryRun {
+		for _, c := range missingCfg {
+			fmt.Printf("would save bridge config for running @%s (workdir=%s)\n", c.Handle, c.Workdir)
+		}
 		return nil
 	}
-	return st.Save()
+	if err := st.Save(); err != nil {
+		return err
+	}
+
+	var cfgFailed []string
+	for _, c := range missingCfg {
+		created, err := ensureConfig(c)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: @%s: cannot save bridge config: %v\n", c.Handle, err)
+			cfgFailed = append(cfgFailed, c.Handle)
+			continue
+		}
+		if created {
+			fmt.Printf("saved bridge config for running @%s (workdir=%s)\n", c.Handle, c.Workdir)
+		}
+	}
+	if len(cfgFailed) > 0 {
+		return fmt.Errorf("bridge config not saved for %v: fleet `bridge start --all` will not revive them", cfgFailed)
+	}
+	return nil
+}
+
+// missingConfigs は稼働中 (state 上で running の entry と、これから取り込む orphan) のうち
+// bridge config が無い handle について、起動中プロセスの実パラメータから作る config を返す (issue #90)。
+// Handle 昇順。dead entry は対象外 (止まっているものを fleet に起こさせる宣言はしない)。
+func missingConfigs(st *state.State, orphans []orphanEntry) ([]bridgecfg.BridgeConfig, error) {
+	have, err := configuredHandles()
+	if err != nil {
+		return nil, err
+	}
+	var out []bridgecfg.BridgeConfig
+	for h, e := range st.Bridges {
+		if have[h] || !e.IsRunning() {
+			continue
+		}
+		out = append(out, bridgecfg.BridgeConfig{
+			Handle: h, Workdir: e.Workdir, Tenant: e.Tenant, BridgeType: e.BridgeType,
+			DisplayName: cmdlineDisplayName(e.PID), Model: e.Model,
+		})
+	}
+	for _, o := range orphans {
+		if have[o.handle] {
+			continue
+		}
+		out = append(out, bridgecfg.BridgeConfig{
+			Handle: o.handle, Workdir: o.workdir, Tenant: o.tenant, BridgeType: o.bridgeType,
+			DisplayName: cmdlineDisplayName(o.pid), Model: o.model,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Handle < out[j].Handle })
+	return out, nil
 }
 
 // resolveOrphanLogPath は sync が取り込む orphan の log_path を決める (issue #54)。
