@@ -73,7 +73,7 @@ subprocess timeout. --all restarts bridges one at a time.
 
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge on re-spawn (optional)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal after re-spawn")
-	cmd.Flags().DurationVar(&stopTimeout, "stop-timeout", 0, "how long to wait for the bridge to exit after SIGTERM before sending SIGKILL (default: bridge drain limit + 1m, same as `bridge stop --timeout`)")
+	cmd.Flags().DurationVar(&stopTimeout, "stop-timeout", 0, "how long to wait for the bridge to exit after SIGTERM before sending SIGKILL (default: bridge drain limit + 1m, same as bridge stop --timeout)")
 	cmd.Flags().BoolVar(&all, "all", false, "Restart all known bridge workers sequentially")
 
 	return cmd
@@ -111,14 +111,11 @@ func runRestart(handle, displayName string, spawnTimeoutS int, stopTimeout time.
 
 	// ── 2. stop ──────────────────────────────────────────────────────────
 	if isRunning {
-		// state からエントリを先に削除して lock を手放す。drain は最大で数十分かかるので lock を
-		// 持ったまま待たない。エントリを消しておくことで、drain 後に dead になったエントリを
-		// watchdog が拾って re-spawn と競合することも避ける。
-		st.Delete(handle)
-		if saveErr := st.Save(); saveErr != nil {
-			unlock()
-			return fmt.Errorf("save state: %w", saveErr)
-		}
+		// drain は最大で数十分かかるので lock を持ったまま待たない。state のエントリは旧プロセスが
+		// 消えるまで残す (`bridge stop` と同じ)。待機中に Ctrl-C / SSH 切断 / SIGKILL などで restart が
+		// 終わってもエントリ (workdir / tenant) が残るので、旧プロセス終了後に `bridge restart` を
+		// もう一度実行すれば re-spawn できる (config のある bridge は fleet の `bridge start --all` も拾う)。
+		// issue #97: 以前は先にエントリを消していたため、中断すると bridge が止まったまま state からも消えた。
 		unlock()
 
 		// stop と同じく SIGTERM → drain が終わるまで最大 stopTimeout 待ち → 超えたら SIGKILL (issue #92)。
@@ -126,10 +123,36 @@ func runRestart(handle, displayName string, spawnTimeoutS int, stopTimeout time.
 			return fmt.Errorf("stop @%s: %w", handle, stopErr)
 		}
 		// SIGKILL に落ちた場合はプロセスが消えるまで少し待つ (消える前の re-spawn は pgrep で弾かれる)。
+		// 消えなければエントリは残したままエラーで終わる。
 		if proc, findErr := os.FindProcess(savedPID); findErr == nil && !waitExit(proc, restartKillGrace, nil) {
 			return fmt.Errorf("@%s (pid=%d) still alive %s after SIGKILL; not re-spawning", handle, savedPID, restartKillGrace)
 		}
 		fmt.Fprintf(os.Stderr, "stopped @%s (pid=%d)\n", handle, savedPID)
+
+		// lock を取り直し、止めたプロセスのエントリが残っているときだけ消して re-spawn する。
+		// 旧プロセスの exit から lock を取り直すまでの間に別の spawn (fleet の `bridge start --all` 等) が
+		// 先に re-spawn していた場合 (エントリが消えている / 別 PID に変わっている) は二重 spawn を避けて
+		// エラーで終わる。この場合 bridge はその spawn が起動したもので動いている (issue #97 で許容)。
+		st, unlock, err = state.LoadLocked()
+		if err != nil {
+			return fmt.Errorf("load state: %w", err)
+		}
+		cur := st.Get(handle)
+		if cur == nil {
+			// stop / prune / sync などがエントリを消した。bridge は止まったままで state にも無い。
+			unlock()
+			return fmt.Errorf("@%s state entry was removed while waiting for pid=%d to exit (by `bridge stop` / prune / sync); bridge is stopped and not re-spawned. Start it again with `bridge start`", handle, savedPID)
+		}
+		if cur.PID != savedPID {
+			unlock()
+			return fmt.Errorf("@%s state changed while waiting for pid=%d to exit (likely re-spawned by fleet `bridge start --all` or another spawn); not re-spawning. Check with `bridge list`", handle, savedPID)
+		}
+		st.Delete(handle)
+		if saveErr := st.Save(); saveErr != nil {
+			unlock()
+			return fmt.Errorf("save state: %w", saveErr)
+		}
+		unlock()
 	} else {
 		fmt.Fprintf(os.Stderr, "warning: @%s (pid=%d) was not running. Cleaning up state and re-spawning.\n", handle, savedPID)
 		st.Delete(handle)
