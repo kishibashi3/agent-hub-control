@@ -88,15 +88,15 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 | command | 用途 |
 |---|---|
 | `bridge spawn [<handle>] [--workdir …] [--type …] [--tenant …] [--model …]` | bridge 起動（`--model` は bridge-claude2 の `-model` に渡る。未指定なら agenthubctl は渡さず、bridge 側が `AGENT_HUB_MODEL` env か内蔵 default で解決。`--model ""` で保存値を上書きして渡さない） |
-| `bridge stop <handle> [--timeout …]` | bridge 停止（実プロセスを発見して停止）。SIGTERM 後、bridge の graceful drain（`/compact` と未処理の便）が終わって exit するのを待つ。既定の待ち時間は bridge の drain 上限 + 1m（subprocess timeout 30m なら 37m）で、超えたときだけ SIGKILL。`--timeout 5s` などで短くできる（issue #89） |
+| `bridge stop <handle> [--timeout …]` | bridge 停止（実プロセスを発見して停止）。SIGTERM 後、bridge の graceful drain（`/compact` と未処理の便）が終わって exit するのを待つ。既定の待ち時間は bridge の drain 上限 + 1m（subprocess timeout 30m なら 37m）で、超えたときだけ SIGKILL。`--timeout 5s` などで短くできる（issue #89）。config があれば `stopped_at` を記録し、fleet（`start --all`）はその bridge を起こさなくなる。process が既に無くても記録する（issue #98）。config が壊れている等で記録できなくても process は止め、記録の失敗は非 0 終了で返す（この場合 fleet は次回また起こす） |
 | `bridge restart <handle> \| --all [--stop-timeout …]` | 再起動（display_name / model は bridge config を再読、無ければ前回値）。stop 側は `bridge stop` と同じく graceful drain が終わるまで待ってから再 spawn する。既定の待ち時間は bridge の drain 上限 + 1m（`--stop-timeout` で変更、超えたら SIGKILL して再 spawn。SIGKILL 後 5 秒たってもプロセスが残っている場合は再 spawn せずエラーで終了する）。drain を待っている間も state のエントリは残すので、待機中に Ctrl-C・SSH 切断・SIGKILL などで restart が終わっても bridge は state から消えない。旧プロセスが終わった後、config のある bridge は fleet の `bridge start --all` が再 spawn し、config の無い bridge は `bridge restart <handle>` をもう一度実行すれば再 spawn できる。旧プロセスが終わってから restart が再 spawn に移るまでの間に fleet などが先に再 spawn した場合、restart は二重に起動せずエラーで終了する（bridge はそちらが起動したもので動いている。`bridge list` で確認）（issue #97）。単位に注意: `--stop-timeout` は duration（例 `5m`）、`--timeout` は再 spawn 後の ready 待ちで秒（例 `40`）。`--all` は 1 体ずつ順に回す（issue #92） |
-| `bridge start <handle> \| --all` | 起動（config から） |
+| `bridge start <handle> \| --all` | 起動（config から）。`start <handle>` / `spawn` は config の `stopped_at` を消す（明示的に起こした = 動かす）。「already running」で弾かれた場合は消さない。`--all` は `stopped_at` のある bridge を `skipping @x (stopped since …)` で飛ばす（issue #98） |
 | `bridge list` | 一覧（untracked 併記、MODEL 列 = agenthubctl が渡した model。未指定は `(not passed)`） |
 | `bridge status [handle]` | 状態表示（`status <handle>` は `model: <id> (source: flag\|config\|state\|cmdline)`） |
 | `bridge sync [--dry-run]` | state と実プロセスを整合 |
 | `bridge prune [--dry-run]` | dead エントリ削除 |
 | `bridge logs [-f] <handle>` | ログ表示（agenthubctl が接続した stdout/stderr。既定 `$AGENT_HUB_HOME/logs/bridge-<handle>.out.log`、`AGENT_HUB_BRIDGE_LOG_DIR` で上書き可。旧 `/tmp/bridge-<handle>.log` は spawn / restart 時に新パスへの symlink に置き換わり移行期間中は参照可（旧バイナリが残した自己所有ログは `.pre-migration` に退避）、将来の minor で削除） |
-| `bridge config set/get/list` | spawn 引数の保存（`--workdir` / `--tenant` / `--type` / `--display-name` / `--model`） |
+| `bridge config set/get/list` | spawn 引数の保存（`--workdir` / `--tenant` / `--type` / `--display-name` / `--model`）。`list` の STATE 列 / `get` の `state` は `run`（fleet が起こす）か `stopped since <時刻>`（`bridge stop` で止めてある） |
 | `fleet install [--system\|--user] [--dry-run]` | 起動時＋定期で `bridge start --all` する boot-start + watchdog を導入 |
 | `fleet uninstall` | boot-start + watchdog を撤去（env ファイルは残す） |
 | `fleet status` | 導入状態・timer の有効/稼働・次回発火を表示 |
@@ -110,7 +110,8 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 host のスリープ → WSL2 VM 死亡 → bridge 全滅、のような全滅から fleet を自動復帰させる
 boot-start + watchdog。`bridge config` に登録した desired-state（`bridge config list`）を
 正本に、**起動時（30s 後）＋ 3 分ごと**に冪等な `bridge start --all` を流す。すでに動いて
-いる bridge は skip され、落ちているものだけが復活する。
+いる bridge は skip され、落ちているものだけが復活する。`bridge stop` で止めた bridge は config に
+`stopped_at` が残るので起こさない（クラッシュで死んだものには付かないので起こす。issue #98）。
 
 current user / HOME / `agenthubctl` の実体 path は install 時に解決されるので、生成される
 unit に **machine-specific なハードコード path は一切無い**。秘密は unit ではなく

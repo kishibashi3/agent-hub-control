@@ -103,7 +103,7 @@ func TestSpawnBridgeArgs(t *testing.T) {
 	// run spawn in background and wait briefly; it succeeds when "registered and listening" is found
 	done := make(chan error, 1)
 	go func() {
-		done <- runSpawn(handle, "bridge-claude2", workdir, "", "", modelSpec{ID: "test-model-x", Source: modelSourceFlag}, 10)
+		done <- runSpawn(handle, "bridge-claude2", workdir, "", "", modelSpec{ID: "test-model-x", Source: modelSourceFlag}, 10, stoppedIgnore)
 	}()
 
 	select {

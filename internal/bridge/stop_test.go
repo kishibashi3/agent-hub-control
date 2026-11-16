@@ -115,6 +115,8 @@ func TestRunStopReleasesLockWhileDraining(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("test is Linux-specific")
 	}
+	// runStop は bridge config にも stopped_at を書くので config も隔離する (issue #98)。
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("AGENT_HUB_HOME", t.TempDir())
 	handle := "stop_lock_test_handle_8a4c"
 	cmd, _ := startTermDelayProc(t, handle, "1.5")

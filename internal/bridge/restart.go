@@ -17,7 +17,10 @@ import (
 const restartKillGrace = 5 * time.Second
 
 // restartSpawn は re-spawn の実体。テストで差し替える (実 bridge binary を起動させないため)。
-var restartSpawn = runSpawn
+// restart は config の stopped_at を見ない / 変えない (issue #98: 記録も消去もしない)。
+var restartSpawn = func(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, timeoutS int) error {
+	return runSpawn(participant, bridgeType, workdir, tenantFlag, displayName, model, timeoutS, stoppedIgnore)
+}
 
 func NewRestartCmd() *cobra.Command {
 	var (

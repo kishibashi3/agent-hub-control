@@ -32,6 +32,8 @@ func TestRunStopCleansStaleState(t *testing.T) {
 		t.Skip("test relies on /proc semantics")
 	}
 	tmp := t.TempDir()
+	// runStop は bridge config にも stopped_at を書くので config も隔離する (issue #98)。
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("AGENT_HUB_HOME", tmp)
 
 	// pgrep にどのプロセスとも当たらない一意な handle を使う (= live プロセス無しを保証)。
