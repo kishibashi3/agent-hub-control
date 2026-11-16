@@ -72,7 +72,7 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 |---|---|
 | `bridge spawn [<handle>] [--workdir …] [--type …] [--tenant …] [--model …]` | bridge 起動（`--model` は bridge-claude2 の `-model` に渡る。未指定なら agenthubctl は渡さず、bridge 側が `AGENT_HUB_MODEL` env か内蔵 default で解決。`--model ""` で保存値を上書きして渡さない） |
 | `bridge stop <handle> [--timeout …]` | bridge 停止（実プロセスを発見して停止）。SIGTERM 後、bridge の graceful drain（`/compact` と未処理の便）が終わって exit するのを待つ。既定の待ち時間は bridge の drain 上限 + 1m（subprocess timeout 30m なら 37m）で、超えたときだけ SIGKILL。`--timeout 5s` などで短くできる（issue #89） |
-| `bridge restart <handle> \| --all` | 再起動（display_name / model は bridge config を再読、無ければ前回値） |
+| `bridge restart <handle> \| --all [--stop-timeout …]` | 再起動（display_name / model は bridge config を再読、無ければ前回値）。stop 側は `bridge stop` と同じく graceful drain が終わるまで待ってから再 spawn する。既定の待ち時間は bridge の drain 上限 + 1m（`--stop-timeout` で変更、超えたら SIGKILL して再 spawn）。単位に注意: `--stop-timeout` は duration（例 `5m`）、`--timeout` は再 spawn 後の ready 待ちで秒（例 `40`）。`--all` は 1 体ずつ順に回す（issue #92） |
 | `bridge start <handle> \| --all` | 起動（config から） |
 | `bridge list` | 一覧（untracked 併記、MODEL 列 = agenthubctl が渡した model。未指定は `(not passed)`） |
 | `bridge status [handle]` | 状態表示（`status <handle>` は `model: <id> (source: flag\|config\|state\|cmdline)`） |

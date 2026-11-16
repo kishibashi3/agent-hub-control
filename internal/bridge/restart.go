@@ -4,36 +4,58 @@ package bridge
 import (
 	"fmt"
 	"os"
-	"syscall"
 	"time"
 
 	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
+	"github.com/kishibashi3/agent-hub-control/internal/config"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
 )
 
-const (
-	restartStopTimeoutS = 15
-	restartStopPollMs   = 200
-)
+// restartKillGrace は stop の待ちが --stop-timeout を超えて SIGKILL した後、プロセスが消えるのを待つ上限。
+// 消える前に re-spawn すると spawn 側の実プロセスチェック (pgrep) で弾かれる。
+const restartKillGrace = 5 * time.Second
+
+// restartSpawn は re-spawn の実体。テストで差し替える (実 bridge binary を起動させないため)。
+var restartSpawn = runSpawn
 
 func NewRestartCmd() *cobra.Command {
 	var (
 		displayName string
 		timeout     int
+		stopTimeout time.Duration
 		all         bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "restart <handle> | --all",
 		Short: "Restart a bridge worker (stop then spawn with same workdir/tenant)",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Restart a bridge worker: stop it, then spawn it again with the same workdir/tenant.
+
+The stop phase works like ` + "`bridge stop`" + `: it sends SIGTERM and waits for the bridge to
+finish its graceful drain (/compact and processing of pending messages) and exit. SIGKILL is
+sent only if the process is still alive after --stop-timeout. The default follows the bridge's
+drain limit (compact 5m + subprocess timeout + 1m) plus a 1m margin: 37m with the default 30m
+subprocess timeout. --all restarts bridges one at a time.
+
+--timeout is the ready-signal wait after re-spawn (unchanged).`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cmd.Flags().Changed("stop-timeout") {
+				cfg, err := config.Load()
+				if err != nil {
+					return fmt.Errorf("load config: %w", err)
+				}
+				stopTimeout = defaultStopTimeout(cfg.SubprocessTimeoutS)
+			}
+			if stopTimeout <= 0 {
+				return fmt.Errorf("--stop-timeout must be positive (got %s)", stopTimeout)
+			}
 			if all {
 				if len(args) > 0 {
 					return fmt.Errorf("--all and <handle> are mutually exclusive")
 				}
-				return runRestartAll(timeout)
+				return runRestartAll(timeout, stopTimeout)
 			}
 			if len(args) == 0 {
 				return fmt.Errorf("either <handle> or --all is required")
@@ -45,18 +67,19 @@ func NewRestartCmd() *cobra.Command {
 					displayName = cfg.DisplayName
 				}
 			}
-			return runRestart(handle, displayName, timeout)
+			return runRestart(handle, displayName, timeout, stopTimeout)
 		},
 	}
 
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge on re-spawn (optional)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal after re-spawn")
+	cmd.Flags().DurationVar(&stopTimeout, "stop-timeout", 0, "how long to wait for the bridge to exit after SIGTERM before sending SIGKILL (default: bridge drain limit + 1m, same as `bridge stop --timeout`)")
 	cmd.Flags().BoolVar(&all, "all", false, "Restart all known bridge workers sequentially")
 
 	return cmd
 }
 
-func runRestart(handle, displayName string, spawnTimeoutS int) error {
+func runRestart(handle, displayName string, spawnTimeoutS int, stopTimeout time.Duration) error {
 	// ── 1. state を読み、エントリを取得 ──────────────────────────────────
 	st, unlock, err := state.LoadLocked()
 	if err != nil {
@@ -88,20 +111,9 @@ func runRestart(handle, displayName string, spawnTimeoutS int) error {
 
 	// ── 2. stop ──────────────────────────────────────────────────────────
 	if isRunning {
-		proc, findErr := os.FindProcess(savedPID)
-		if findErr != nil {
-			unlock()
-			return fmt.Errorf("find process pid=%d: %w", savedPID, findErr)
-		}
-
-		if sigErr := proc.Signal(syscall.SIGTERM); sigErr != nil {
-			unlock()
-			return fmt.Errorf("SIGTERM pid=%d: %w", savedPID, sigErr)
-		}
-
-		fmt.Fprintf(os.Stderr, "stopping @%s (pid=%d)...\n", handle, savedPID)
-
-		// state からエントリを削除して保存
+		// state からエントリを先に削除して lock を手放す。drain は最大で数十分かかるので lock を
+		// 持ったまま待たない。エントリを消しておくことで、drain 後に dead になったエントリを
+		// watchdog が拾って re-spawn と競合することも避ける。
 		st.Delete(handle)
 		if saveErr := st.Save(); saveErr != nil {
 			unlock()
@@ -109,9 +121,13 @@ func runRestart(handle, displayName string, spawnTimeoutS int) error {
 		}
 		unlock()
 
-		// プロセスが終了するまで待機
-		if waitErr := waitForExit(savedPID); waitErr != nil {
-			return fmt.Errorf("wait for @%s to stop: %w", handle, waitErr)
+		// stop と同じく SIGTERM → drain が終わるまで最大 stopTimeout 待ち → 超えたら SIGKILL (issue #92)。
+		if stopErr := stopPID(handle, savedPID, stopTimeout); stopErr != nil {
+			return fmt.Errorf("stop @%s: %w", handle, stopErr)
+		}
+		// SIGKILL に落ちた場合はプロセスが消えるまで少し待つ (消える前の re-spawn は pgrep で弾かれる)。
+		if proc, findErr := os.FindProcess(savedPID); findErr == nil && !waitExit(proc, restartKillGrace, nil) {
+			return fmt.Errorf("@%s (pid=%d) still alive %s after SIGKILL; not re-spawning", handle, savedPID, restartKillGrace)
 		}
 		fmt.Fprintf(os.Stderr, "stopped @%s (pid=%d)\n", handle, savedPID)
 	} else {
@@ -126,10 +142,11 @@ func runRestart(handle, displayName string, spawnTimeoutS int) error {
 
 	// ── 3. spawn ─────────────────────────────────────────────────────────
 	fmt.Fprintf(os.Stderr, "re-spawning @%s (type=%s, workdir=%s)...\n", handle, savedBridgeType, savedWorkdir)
-	return runSpawn(handle, savedBridgeType, savedWorkdir, savedTenant, displayName, savedModel, spawnTimeoutS)
+	return restartSpawn(handle, savedBridgeType, savedWorkdir, savedTenant, displayName, savedModel, spawnTimeoutS)
 }
 
-func runRestartAll(spawnTimeoutS int) error {
+// runRestartAll は既知の bridge を 1 体ずつ順に restart する (並列化はしない、issue #92)。
+func runRestartAll(spawnTimeoutS int, stopTimeout time.Duration) error {
 	st, err := state.Load()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
@@ -151,7 +168,7 @@ func runRestartAll(spawnTimeoutS int) error {
 			dn = cfg.DisplayName
 		}
 		fmt.Fprintf(os.Stderr, "=== restarting @%s ===\n", h)
-		if err := runRestart(h, dn, spawnTimeoutS); err != nil {
+		if err := runRestart(h, dn, spawnTimeoutS, stopTimeout); err != nil {
 			fmt.Fprintf(os.Stderr, "error: @%s: %v\n", h, err)
 			failed = append(failed, h)
 		}
@@ -162,20 +179,4 @@ func runRestartAll(spawnTimeoutS int) error {
 	}
 	fmt.Printf("restarted %d bridge(s)\n", len(handles))
 	return nil
-}
-
-// waitForExit は pid のプロセスが終了するまでポーリングで待機する。
-func waitForExit(pid int) error {
-	deadline := time.Now().Add(restartStopTimeoutS * time.Second)
-	for time.Now().Before(deadline) {
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			return nil // プロセスが消えた
-		}
-		if proc.Signal(syscall.Signal(0)) != nil {
-			return nil // シグナル送信失敗 = プロセスが存在しない
-		}
-		time.Sleep(restartStopPollMs * time.Millisecond)
-	}
-	return fmt.Errorf("pid=%d did not exit within %ds", pid, restartStopTimeoutS)
 }
