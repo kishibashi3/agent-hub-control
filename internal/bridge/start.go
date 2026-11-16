@@ -47,6 +47,9 @@ func runStartOne(handle string, timeout int) error {
 	if cfg == nil {
 		return fmt.Errorf("no config saved for @%s. Run `bridge config set %s --workdir <path>` first.", handle, handle)
 	}
+	if err := clearStoppedForExplicitStart(handle); err != nil {
+		return err
+	}
 	bridgeType := cfg.BridgeType
 	if bridgeType == "" {
 		bridgeType = defaultBridgeType
@@ -72,6 +75,13 @@ func runStartAll(timeout int) error {
 	var started, skipped int
 	var failed []string
 	for _, cfg := range cfgs {
+		// `bridge stop` で止めてある bridge は起こさない (issue #98)。クラッシュで死んだものには
+		// stopped_at が無いので、これまで通り起こす。
+		if cfg.Stopped() {
+			fmt.Fprintf(os.Stderr, "skipping @%s (stopped since %s)\n", cfg.Handle, cfg.StoppedAt)
+			skipped++
+			continue
+		}
 		entry := st.Get(cfg.Handle)
 		if entry != nil && entry.IsRunning() {
 			fmt.Fprintf(os.Stderr, "skipping @%s (already running pid=%d)\n", cfg.Handle, entry.PID)
@@ -102,5 +112,20 @@ func runStartAll(timeout int) error {
 		return fmt.Errorf("start failed for: %v", failed)
 	}
 	fmt.Printf("done: %d started, %d skipped\n", started, skipped)
+	return nil
+}
+
+// clearStoppedForExplicitStart は明示的な `bridge start <handle>` / `bridge spawn` で config の
+// stopped_at を消す (明示的に起こした = 動かす、issue #98)。spawn の成否より前に消すのは、起こすという
+// 意図を記録するため (失敗しても fleet が次回また起こしにいく = stopped_at の無い config と同じ扱い)。
+// config が無い / stopped_at が無い場合は config に触らない。
+func clearStoppedForExplicitStart(handle string) error {
+	cleared, err := bridgecfg.ClearStopped(handle)
+	if err != nil {
+		return fmt.Errorf("clear stopped_at in bridge config: %w", err)
+	}
+	if cleared {
+		fmt.Fprintf(os.Stderr, "note: cleared stopped_at for @%s (fleet will start it again)\n", handle)
+	}
 	return nil
 }

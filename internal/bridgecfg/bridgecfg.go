@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // BridgeConfig holds saved defaults for a bridge handle.
@@ -18,6 +19,16 @@ type BridgeConfig struct {
 	// Model は bridge worker に渡す LLM model id (issue #46)。空 = bridge 内蔵 default。
 	// 検証はしない (bridge-claude2 も claude CLI にそのまま渡すだけで、id 一覧を持つと陳腐化する)。
 	Model string `json:"model,omitempty"`
+	// StoppedAt は `bridge stop` で「止めてある」と記録した時刻 (RFC 3339 UTC、issue #98)。
+	// 空 = 動かす (fleet の `bridge start --all` が起こす)。ある = 止めてある (fleet は起こさない)。
+	// bool でなく時刻なのは「いつから止めてあるか」を残し、「忘れられている」と区別できるようにするため。
+	// 項目の無い既存 config は空として読めるので書き換え不要。
+	StoppedAt string `json:"stopped_at,omitempty"`
+}
+
+// Stopped は config が「止めてある」(stopped_at あり) かを返す。
+func (c *BridgeConfig) Stopped() bool {
+	return c != nil && c.StoppedAt != ""
 }
 
 func configDir() (string, error) {
@@ -124,4 +135,40 @@ func Delete(handle string) error {
 		return fmt.Errorf("no config for @%s", handle)
 	}
 	return err
+}
+
+// stoppedAtFormat は stopped_at の書式 (RFC 3339 UTC、ミリ秒、Z suffix)。
+const stoppedAtFormat = "2006-01-02T15:04:05.000Z07:00"
+
+// MarkStopped は handle の config に stopped_at = now を記録する (issue #98)。config が無ければ
+// 何もせず (作らない) false を返す。既に止めてある場合は元の時刻を残す (「いつから止めてあるか」を保つ)。
+// 他の項目は書き換えない。
+func MarkStopped(handle string, now time.Time) (bool, error) {
+	cfg, err := Load(handle)
+	if err != nil || cfg == nil {
+		return false, err
+	}
+	if cfg.StoppedAt != "" {
+		return true, nil
+	}
+	cfg.StoppedAt = now.UTC().Format(stoppedAtFormat)
+	if err := Save(cfg); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ClearStopped は handle の config から stopped_at を消す (明示的に起こした = 動かす、issue #98)。
+// config が無い / stopped_at が無い場合はファイルに触らない (既存 config を書き換えない)。
+// 消した場合は true を返す。
+func ClearStopped(handle string) (bool, error) {
+	cfg, err := Load(handle)
+	if err != nil || cfg == nil || cfg.StoppedAt == "" {
+		return false, err
+	}
+	cfg.StoppedAt = ""
+	if err := Save(cfg); err != nil {
+		return false, err
+	}
+	return true, nil
 }

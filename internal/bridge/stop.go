@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
 	"github.com/kishibashi3/agent-hub-control/internal/config"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
@@ -71,6 +72,19 @@ subprocess timeout. Pass a short --timeout (e.g. 5s) to cut the drain short.`,
 }
 
 func runStop(user string, timeout time.Duration) error {
+	// 「止めてある」を config に記録する (issue #98)。SIGTERM の前に書くのは、drain 後に process が消えてから
+	// 記録するまでの間に fleet (`start --all`) が走って起こしてしまわないようにするため。process が既に
+	// 無くても記録する (offline の peer を「止めてある」にできる)。config が無ければ作らない。
+	// runStop を呼ぶのは CLI の `bridge stop` だけで、restart は stopPID を直接使うので記録しない。
+	marked := false
+	if validHandle.MatchString(user) {
+		var err error
+		marked, err = bridgecfg.MarkStopped(user, time.Now())
+		if err != nil {
+			return fmt.Errorf("record stopped_at in bridge config: %w", err)
+		}
+	}
+
 	st, unlock, err := state.LoadLocked()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
@@ -109,6 +123,10 @@ func runStop(user string, timeout time.Duration) error {
 			fmt.Fprintf(os.Stderr, "warning: @%s (pid=%d) is not running. Cleaning up stale state.\n", user, entry.PID)
 			st.Delete(user)
 			return st.Save()
+		}
+		if marked {
+			fmt.Printf("@%s is not running; marked as stopped in config (fleet will not start it)\n", user)
+			return nil
 		}
 		return fmt.Errorf("@%s not found in state or running processes. Use `bridge list` to see what is running.", user)
 	}

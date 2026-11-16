@@ -83,6 +83,11 @@ func NewSpawnCmd() *cobra.Command {
 				ms = modelSpec{ID: cfg.Model, Source: modelSourceConfig}
 			}
 
+			if cfg != nil && validHandle.MatchString(participant) {
+				if err := clearStoppedForExplicitStart(participant); err != nil {
+					return err
+				}
+			}
 			return runSpawn(participant, bridgeType, workdir, tenant, displayName, ms, timeout)
 		},
 	}

@@ -110,6 +110,7 @@ func newConfigGetCmd() *cobra.Command {
 			fmt.Fprintf(w, "type\t%s\n", bridgeType)
 			fmt.Fprintf(w, "display_name\t%s\n", cfg.DisplayName)
 			fmt.Fprintf(w, "model\t%s\n", configModelDisplay(cfg.Model))
+			fmt.Fprintf(w, "state\t%s\n", configStateDisplay(cfg))
 			return w.Flush()
 		},
 	}
@@ -130,18 +131,27 @@ func newConfigListCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "HANDLE\tTYPE\tTENANT\tMODEL\tWORKDIR\tDISPLAY_NAME")
+			fmt.Fprintln(w, "HANDLE\tSTATE\tTYPE\tTENANT\tMODEL\tWORKDIR\tDISPLAY_NAME")
 			for _, cfg := range cfgs {
 				bridgeType := cfg.BridgeType
 				if bridgeType == "" {
 					bridgeType = defaultBridgeType
 				}
-				fmt.Fprintf(w, "@%s\t%s\t%s\t%s\t%s\t%s\n",
-					cfg.Handle, bridgeType, cfg.Tenant, configModelDisplay(cfg.Model), cfg.Workdir, cfg.DisplayName)
+				fmt.Fprintf(w, "@%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					cfg.Handle, configStateDisplay(cfg), bridgeType, cfg.Tenant, configModelDisplay(cfg.Model), cfg.Workdir, cfg.DisplayName)
 			}
 			return w.Flush()
 		},
 	}
+}
+
+// configStateDisplay は config の desired state 表示 (issue #98): stopped_at が無ければ "run"
+// (fleet が起こす)、あれば "stopped since <時刻>" (fleet は起こさない)。
+func configStateDisplay(cfg *bridgecfg.BridgeConfig) string {
+	if cfg.Stopped() {
+		return "stopped since " + cfg.StoppedAt
+	}
+	return "run"
 }
 
 // configModelDisplay は config 表示用: 未設定は "(unset)"。
