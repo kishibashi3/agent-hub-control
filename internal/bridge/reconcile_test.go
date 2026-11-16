@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 )
@@ -47,7 +48,7 @@ func TestRunStopCleansStaleState(t *testing.T) {
 	}
 	unlock()
 
-	if err := runStop(handle); err != nil {
+	if err := runStop(handle, time.Second); err != nil {
 		t.Fatalf("runStop should succeed cleaning stale state, got: %v", err)
 	}
 
