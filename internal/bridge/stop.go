@@ -2,6 +2,7 @@
 package bridge
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -76,15 +77,29 @@ func runStop(user string, timeout time.Duration) error {
 	// 記録するまでの間に fleet (`start --all`) が走って起こしてしまわないようにするため。process が既に
 	// 無くても記録する (offline の peer を「止めてある」にできる)。config が無ければ作らない。
 	// runStop を呼ぶのは CLI の `bridge stop` だけで、restart は stopPID を直接使うので記録しない。
+	//
+	// 記録に失敗しても (壊れた config / 書けない config dir) process は止める。止めるのがこのコマンドの
+	// 主目的なので、失敗は最後に非 0 終了で返す (PR #102 review Minor 4)。この場合 fleet は次回また起こす。
 	marked := false
+	var markErr error
 	if validHandle.MatchString(user) {
 		var err error
 		marked, err = bridgecfg.MarkStopped(user, time.Now())
 		if err != nil {
-			return fmt.Errorf("record stopped_at in bridge config: %w", err)
+			markErr = fmt.Errorf("record stopped_at in bridge config (fleet may start @%s again): %w", user, err)
+			fmt.Fprintf(os.Stderr, "warning: %v\n", markErr)
 		}
 	}
 
+	err := stopProcess(user, timeout, marked)
+	if markErr != nil {
+		return errors.Join(err, markErr)
+	}
+	return err
+}
+
+// stopProcess は runStop の process を止める部分。marked は config に stopped_at を記録できたか。
+func stopProcess(user string, timeout time.Duration, marked bool) error {
 	st, unlock, err := state.LoadLocked()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)

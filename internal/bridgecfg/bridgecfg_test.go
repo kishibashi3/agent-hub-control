@@ -103,3 +103,39 @@ func TestClearStoppedLeavesUnstoppedFileUntouched(t *testing.T) {
 		t.Errorf("legacy config without stopped_at must read as run")
 	}
 }
+
+// TestLoadUsesFileNameAsHandle: 中身の handle が欠けた / 違う手編集 config でも、MarkStopped は読んだ
+// <handle>.json に書き戻す (PR #102 review Minor 3)。
+func TestLoadUsesFileNameAsHandle(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := configDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"alpha": `{"workdir":"/w"}`,
+		"beta":  `{"handle":"gamma","workdir":"/w"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if marked, err := MarkStopped(name, time.Now()); err != nil || !marked {
+			t.Fatalf("MarkStopped(%s) = %v, %v", name, marked, err)
+		}
+		cfg, err := Load(name)
+		if err != nil || !cfg.Stopped() || cfg.Handle != name {
+			t.Errorf("Load(%s) after MarkStopped = %+v, %v; want stopped with handle %s", name, cfg, err, name)
+		}
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 2 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("MarkStopped wrote to another file: %v", names)
+	}
+}

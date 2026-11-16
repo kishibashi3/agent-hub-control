@@ -83,12 +83,9 @@ func NewSpawnCmd() *cobra.Command {
 				ms = modelSpec{ID: cfg.Model, Source: modelSourceConfig}
 			}
 
-			if cfg != nil && validHandle.MatchString(participant) {
-				if err := clearStoppedForExplicitStart(participant); err != nil {
-					return err
-				}
-			}
-			return runSpawn(participant, bridgeType, workdir, tenant, displayName, ms, timeout)
+			// 明示的な spawn は config の stopped_at を消す (issue #98)。消すのは runSpawn が running
+			// チェックを通った後 (PR #102 review Minor 2)。config が無ければ消すものも無い。
+			return runSpawn(participant, bridgeType, workdir, tenant, displayName, ms, timeout, stoppedClear)
 		},
 	}
 
@@ -129,7 +126,25 @@ func (m modelSpec) stateSource() string {
 	return m.Source
 }
 
-func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, timeoutS int) error {
+// stoppedPolicy は runSpawn が config の stopped_at (issue #98) をどう扱うか。判定 / 消去は state lock を
+// 持ったまま、running チェックを通った後・プロセスを起こす前に行う (PR #102 review Minor 1/2)。
+//   - stoppedIgnore: 見ない (watchdog は state 起点、テスト)
+//   - stoppedSkip:   stopped_at があれば起こさず errStoppedInConfig を返す (fleet の start --all)
+//   - stoppedClear:  stopped_at を消してから起こす (明示的な start <h> / spawn)
+type stoppedPolicy int
+
+const (
+	stoppedIgnore stoppedPolicy = iota
+	stoppedSkip
+	stoppedClear
+)
+
+// errStoppedInConfig は stoppedSkip で config が「止めてある」ために起こさなかったことを表す。
+type errStoppedInConfig struct{ since string }
+
+func (e *errStoppedInConfig) Error() string { return "stopped since " + e.since }
+
+func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, timeoutS int, stopped stoppedPolicy) error {
 	if !validHandle.MatchString(participant) {
 		return fmt.Errorf("invalid handle %q: only [a-zA-Z0-9_-] allowed", participant)
 	}
@@ -184,6 +199,30 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 	} else if pid != 0 {
 		unlock()
 		return fmt.Errorf("@%s is already running (pid=%d). Use `bridge stop %s` first.", participant, pid, participant)
+	}
+
+	// config の stopped_at は running チェックを通ってから見る / 消す。
+	//   - skip: ListAll 時点の値でなく今の config を読むので、start --all のループ中に `bridge stop` された
+	//     bridge を起こさない。stop は state lock を取る前に stopped_at を書くので、ここで見落とした場合は
+	//     stop が lock を取った時点でこの spawn の state エントリを見つけて止める。
+	//   - clear: 「already running」で弾いた場合は消さない (drain 中の stop と重なっても fleet が復活させない)。
+	//     起動に失敗しても消したままにするのは、起こすという意図を残すため (fleet が次回また起こしにいく)。
+	switch stopped {
+	case stoppedSkip:
+		cfg, err := bridgecfg.Load(participant)
+		if err != nil {
+			unlock()
+			return fmt.Errorf("load bridge config: %w", err)
+		}
+		if cfg.Stopped() {
+			unlock()
+			return &errStoppedInConfig{since: cfg.StoppedAt}
+		}
+	case stoppedClear:
+		if err := clearStoppedForExplicitStart(participant); err != nil {
+			unlock()
+			return err
+		}
 	}
 
 	// ログファイルをクリア (ディレクトリは state と同じ AGENT_HUB_HOME 配下、issue #54)

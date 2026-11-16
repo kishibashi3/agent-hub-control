@@ -68,6 +68,9 @@ func Load(handle string) (*BridgeConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse bridge config %s: %w", path, err)
 	}
+	// handle はファイル名 (<handle>.json) が正本。手編集で中身の handle が欠けている / 違う場合でも、
+	// Save (configPath(cfg.Handle)) が読んだのと同じファイルに書き戻すようにする (PR #102 review Minor 3)。
+	cfg.Handle = handle
 	return &cfg, nil
 }
 
