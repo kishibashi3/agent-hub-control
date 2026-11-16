@@ -192,3 +192,51 @@ func TestRunRestartDoesNotRespawnWhenAnotherSpawnWon(t *testing.T) {
 		t.Errorf("entry written by the other spawn must be kept (pid=%d), got %+v", newPID, e)
 	}
 }
+
+// TestRunRestartDoesNotRespawnWhenEntryRemoved は、drain 待ちの間に stop / prune / sync が同じ handle の
+// エントリを消した場合、restart は re-spawn せず、「別の spawn が起動した」ではなく「エントリが消えた」と
+// 分かるエラーで終わることを確認する (PR #100 review Minor 1/2)。
+func TestRunRestartDoesNotRespawnWhenEntryRemoved(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("test is Linux-specific")
+	}
+	handle := "restart_removed_test_handle_9c41"
+	cmd, _ := startTermDelayProc(t, handle, "1.5")
+	pid := cmd.Process.Pid
+	setupRestartEntry(t, handle, pid)
+	called := stubRestartSpawn(t, pid)
+
+	errc := make(chan error, 1)
+	go func() { errc <- runRestart(handle, "", 1, 10*time.Second) }()
+
+	// bridge stop / prune / sync がエントリを消した状態を模す。
+	time.Sleep(500 * time.Millisecond)
+	func() {
+		st, unlock, err := state.LoadLocked()
+		if err != nil {
+			t.Fatalf("load locked: %v", err)
+		}
+		defer unlock()
+		st.Delete(handle)
+		if err := st.Save(); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}()
+
+	err := <-errc
+	if err == nil || !strings.Contains(err.Error(), "was removed") || strings.Contains(err.Error(), "re-spawned by fleet") {
+		t.Fatalf("runRestart should fail with an entry-removed error, got %v", err)
+	}
+	select {
+	case <-called:
+		t.Error("re-spawn must not be called when the entry was removed")
+	default:
+	}
+	st, lerr := state.Load()
+	if lerr != nil {
+		t.Fatalf("load state: %v", lerr)
+	}
+	if e := st.Get(handle); e != nil {
+		t.Errorf("entry must stay removed, got %+v", e)
+	}
+}

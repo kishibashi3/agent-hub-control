@@ -138,7 +138,12 @@ func runRestart(handle, displayName string, spawnTimeoutS int, stopTimeout time.
 			return fmt.Errorf("load state: %w", err)
 		}
 		cur := st.Get(handle)
-		if cur == nil || cur.PID != savedPID {
+		if cur == nil {
+			// stop / prune / sync などがエントリを消した。bridge は止まったままで state にも無い。
+			unlock()
+			return fmt.Errorf("@%s state entry was removed while waiting for pid=%d to exit (by `bridge stop` / prune / sync); bridge is stopped and not re-spawned. Start it again with `bridge start`", handle, savedPID)
+		}
+		if cur.PID != savedPID {
 			unlock()
 			return fmt.Errorf("@%s state changed while waiting for pid=%d to exit (likely re-spawned by fleet `bridge start --all` or another spawn); not re-spawning. Check with `bridge list`", handle, savedPID)
 		}
