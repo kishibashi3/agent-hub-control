@@ -20,12 +20,28 @@ WARNING: /home/you/.local/bin is NOT on PATH.
          export PATH="/home/you/.local/bin:$PATH"
 ```
 
+さらに、shell が最初に選ぶ `agenthubctl`（`command -v`）が入れ先の copy かも検査する。
+`PATH` の前のほうに別の copy（例: mise の Go install dir に残った古い binary）があると警告する（issue #99）。
+削除や `PATH` の並べ替えは自動では行わないので、表示された copy を消すか、入れ先を `PATH` の前に置く:
+
+```
+installed agenthubctl -> /home/you/.local/bin/agenthubctl
+WARNING: 'agenthubctl' resolves to /home/you/old/agenthubctl, not /home/you/.local/bin/agenthubctl.
+         Another copy comes earlier on PATH. Remove it or put /home/you/.local/bin first.
+```
+
 `PATH` に追加したら、**正規の `agenthubctl` が一意に解決される**ことを確認する:
 
 ```sh
-which -a agenthubctl       # → ~/.local/bin/agenthubctl の 1 つだけ表示されること
+which -a agenthubctl       # → 表示される行がすべて ~/.local/bin/agenthubctl であること
 agenthubctl version
 ```
+
+`PATH` に `~/.local/bin` が重複して入っている環境では、`which -a` は同じ path を複数行出す。
+すべて `~/.local/bin/agenthubctl` なら問題ない。別の path の行があれば、それが古い copy。
+
+`INSTALL_DIR` は絶対 path で渡す（相対 path や、引用符で囲んで展開されなかった `~` はエラーで止まる。引用しない `INSTALL_DIR=~/x` は shell が `~` を展開するので絶対 path として通る）。
+`GOOS` / `GOARCH` を設定した cross-compile は `go install` が拒否するので、`make build` を使う。
 
 > **古い binary を踏まないために**: リポジトリ root の `./agenthubctl`（`make build` の生成物）や
 > 他リポジトリの別系統 binary（例: `agent-hub-bridges/bridge-tmux/agenthubctl`）を直叩きせず、
