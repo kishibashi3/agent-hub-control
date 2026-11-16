@@ -73,7 +73,7 @@ subprocess timeout. --all restarts bridges one at a time.
 
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge on re-spawn (optional)")
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal after re-spawn")
-	cmd.Flags().DurationVar(&stopTimeout, "stop-timeout", 0, "how long to wait for the bridge to exit after SIGTERM before sending SIGKILL (default: bridge drain limit + 1m, same as `bridge stop --timeout`)")
+	cmd.Flags().DurationVar(&stopTimeout, "stop-timeout", 0, "how long to wait for the bridge to exit after SIGTERM before sending SIGKILL (default: bridge drain limit + 1m, same as bridge stop --timeout)")
 	cmd.Flags().BoolVar(&all, "all", false, "Restart all known bridge workers sequentially")
 
 	return cmd
