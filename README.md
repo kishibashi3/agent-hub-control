@@ -40,7 +40,7 @@ agenthubctl version
 `PATH` に `~/.local/bin` が重複して入っている環境では、`which -a` は同じ path を複数行出す。
 すべて `~/.local/bin/agenthubctl` なら問題ない。別の path の行があれば、それが古い copy。
 
-`INSTALL_DIR` は絶対 path で渡す（相対 path や `~` はエラーで止まる）。
+`INSTALL_DIR` は絶対 path で渡す（相対 path や、引用符で囲んで展開されなかった `~` はエラーで止まる。引用しない `INSTALL_DIR=~/x` は shell が `~` を展開するので絶対 path として通る）。
 `GOOS` / `GOARCH` を設定した cross-compile は `go install` が拒否するので、`make build` を使う。
 
 > **古い binary を踏まないために**: リポジトリ root の `./agenthubctl`（`make build` の生成物）や

@@ -17,7 +17,9 @@ INSTALL_DEST := $(patsubst %/,%,$(INSTALL_DIR))
 #   1. 入れ先が PATH 上にあるか
 #   2. shell が最初に選ぶ agenthubctl (command -v) が入れ先の copy か。PATH の前のほうに
 #      古い copy があると 1 だけでは気づけない (#94)。削除も PATH の並べ替えもせず、警告だけ出す。
-#      比較は -ef (同一 file か) で行い、PATH 側の末尾 / や symlink 経由の dir で誤検知しないようにする。
+#      比較は -ef (同一 file か) で行う。command -v の結果が入れ先と同一 file なら 1 も満たすと
+#      みなすので、PATH 側の entry が symlink 経由の dir や末尾 / 付きでも NOT on PATH を誤警告しない。
+#      1 の文字列一致は、command -v の結果が入れ先と一致しない場合にだけ使う。
 # 相対 path や ~ は go install が拒否するが、mkdir -p が先に走ると空 dir が残るので先に弾く。
 install:
 	@case "$(INSTALL_DEST)" in \
@@ -27,14 +29,18 @@ install:
 	@mkdir -p "$(INSTALL_DEST)"
 	GOBIN="$(INSTALL_DEST)" go install $(BUILD_FLAGS) ./cmd/agenthubctl
 	@echo "installed $(BINARY) -> $(INSTALL_DEST)/$(BINARY)"; \
-	case ":$$PATH:" in \
-	  *":$(INSTALL_DEST):"*|*":$(INSTALL_DEST)/:"*) ON_PATH=1;; \
-	  *) ON_PATH=0; \
-	     echo "WARNING: $(INSTALL_DEST) is NOT on PATH."; \
-	     echo "         Add it so 'agenthubctl' resolves uniquely:"; \
-	     echo "         export PATH=\"$(INSTALL_DEST):\$$PATH\"";; \
-	esac; \
 	FIRST="$$(command -v $(BINARY) 2>/dev/null || true)"; \
+	if [ -n "$$FIRST" ] && [ "$$FIRST" -ef "$(INSTALL_DEST)/$(BINARY)" ]; then \
+	  ON_PATH=1; \
+	else \
+	  case ":$$PATH:" in \
+	    *":$(INSTALL_DEST):"*|*":$(INSTALL_DEST)/:"*) ON_PATH=1;; \
+	    *) ON_PATH=0; \
+	       echo "WARNING: $(INSTALL_DEST) is NOT on PATH."; \
+	       echo "         Add it so 'agenthubctl' resolves uniquely:"; \
+	       echo "         export PATH=\"$(INSTALL_DEST):\$$PATH\"";; \
+	  esac; \
+	fi; \
 	if [ -n "$$FIRST" ] && ! [ "$$FIRST" -ef "$(INSTALL_DEST)/$(BINARY)" ]; then \
 	  echo "WARNING: '$(BINARY)' resolves to $$FIRST, not $(INSTALL_DEST)/$(BINARY)."; \
 	  echo "         Another copy comes earlier on PATH. Remove it or put $(INSTALL_DEST) first."; \
