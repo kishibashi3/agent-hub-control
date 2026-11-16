@@ -9,20 +9,21 @@ status / sync / prune / logs / config と、hub への send / inbox / participan
 make install
 ```
 
-`make install` は `go install` で **GOBIN**（未設定なら `GOPATH/bin`）にバイナリを配置し、
-その場所が `PATH` 上にあるかを検査する。`PATH` に無ければ警告と追加コマンドを表示する:
+`make install` は **`~/.local/bin`**（`INSTALL_DIR` で上書き可）にバイナリを配置し、
+その場所が `PATH` 上にあるかを検査する。`PATH` に無ければ警告と追加コマンドを表示する。
+`GOBIN` / `GOPATH/bin` や mise の Go install dir は Go の設定・版で場所が変わるため入れ先にしない（issue #94）:
 
 ```
-installed agenthubctl -> /home/you/go/bin/agenthubctl
-WARNING: /home/you/go/bin is NOT on PATH.
+installed agenthubctl -> /home/you/.local/bin/agenthubctl
+WARNING: /home/you/.local/bin is NOT on PATH.
          Add it so 'agenthubctl' resolves uniquely:
-         export PATH="/home/you/go/bin:$PATH"
+         export PATH="/home/you/.local/bin:$PATH"
 ```
 
 `PATH` に追加したら、**正規の `agenthubctl` が一意に解決される**ことを確認する:
 
 ```sh
-command -v agenthubctl     # → 1 つだけ表示されること
+which -a agenthubctl       # → ~/.local/bin/agenthubctl の 1 つだけ表示されること
 agenthubctl version
 ```
 
@@ -122,7 +123,7 @@ agenthubctl fleet install
 自分自身に対しては sudo 無しで有効化できる。
 
 ```sh
-make install                                   # 最新 agenthubctl を GOBIN に配置
+make install                                   # 最新 agenthubctl を ~/.local/bin に配置
 agenthubctl fleet install --user               # ~/.config/systemd/user/ に unit を生成 + enable --now
 loginctl enable-linger "$USER"                 # ログイン無しで boot-start
 $EDITOR ~/.agent-hub/fleet.env                 # 下記「fleet.env の中身」
