@@ -1,7 +1,9 @@
 package bridge
 
 import (
+	"os"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -97,5 +99,96 @@ func TestRunRestartKillsAfterStopTimeoutAndRespawns(t *testing.T) {
 	}
 	if err := <-done; !killedBySIGKILL(err) {
 		t.Errorf("expected process to be SIGKILLed, got %v", err)
+	}
+}
+
+// TestRunRestartKeepsStateEntryWhileDraining は、drain を待っている間も state のエントリが残っていることを
+// 確認する (issue #97: 待機中に restart が中断されても、エントリがあれば後から re-spawn できる)。
+func TestRunRestartKeepsStateEntryWhileDraining(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("test is Linux-specific")
+	}
+	handle := "restart_keep_test_handle_5b17"
+	cmd, done := startTermDelayProc(t, handle, "1.5")
+	pid := cmd.Process.Pid
+	setupRestartEntry(t, handle, pid)
+	called := stubRestartSpawn(t, pid)
+
+	errc := make(chan error, 1)
+	go func() { errc <- runRestart(handle, "", 1, 10*time.Second) }()
+
+	time.Sleep(700 * time.Millisecond)
+	st, err := state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if e := st.Get(handle); e == nil || e.PID != pid {
+		t.Errorf("state entry should remain (pid=%d) while draining, got %+v", pid, e)
+	}
+
+	if err := <-errc; err != nil {
+		t.Fatalf("runRestart: %v", err)
+	}
+	select {
+	case <-called:
+	default:
+		t.Fatal("re-spawn was not called")
+	}
+	st, err = state.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if e := st.Get(handle); e != nil {
+		t.Errorf("old entry should be removed before re-spawn (stub spawn does not re-add), got %+v", e)
+	}
+	<-done
+}
+
+// TestRunRestartDoesNotRespawnWhenAnotherSpawnWon は、drain 待ちの間に別の spawn (fleet の bridge start --all 等) が同じ handle の
+// エントリを別 PID で書き換えた場合、restart は二重に re-spawn せずエラーで終わり、そのエントリを
+// 消さないことを確認する (issue #97 案 A で許容した競合)。
+func TestRunRestartDoesNotRespawnWhenAnotherSpawnWon(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("test is Linux-specific")
+	}
+	handle := "restart_race_test_handle_e3a8"
+	cmd, _ := startTermDelayProc(t, handle, "1.5")
+	pid := cmd.Process.Pid
+	setupRestartEntry(t, handle, pid)
+	called := stubRestartSpawn(t, pid)
+
+	errc := make(chan error, 1)
+	go func() { errc <- runRestart(handle, "", 1, 10*time.Second) }()
+
+	// fleet が先に re-spawn した状態を模す: エントリを別 PID (このテストプロセス) に書き換える。
+	time.Sleep(500 * time.Millisecond)
+	newPID := os.Getpid()
+	func() {
+		st, unlock, err := state.LoadLocked()
+		if err != nil {
+			t.Fatalf("load locked: %v", err)
+		}
+		defer unlock()
+		st.Set(handle, newPID, "bridge-claude2", t.TempDir(), "", "", "", "/tmp/log")
+		if err := st.Save(); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}()
+
+	err := <-errc
+	if err == nil || !strings.Contains(err.Error(), "not re-spawning") {
+		t.Fatalf("runRestart should fail without re-spawning, got %v", err)
+	}
+	select {
+	case <-called:
+		t.Error("re-spawn must not be called when the entry was replaced")
+	default:
+	}
+	st, lerr := state.Load()
+	if lerr != nil {
+		t.Fatalf("load state: %v", lerr)
+	}
+	if e := st.Get(handle); e == nil || e.PID != newPID {
+		t.Errorf("entry written by the other spawn must be kept (pid=%d), got %+v", newPID, e)
 	}
 }
