@@ -12,13 +12,6 @@ import (
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 )
 
-// isolateConfigAndState は state と bridge config を tempdir に向ける (実 config を汚さない)。
-func isolateConfigAndState(t *testing.T) {
-	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("AGENT_HUB_HOME", t.TempDir())
-}
-
 // TestRunStopMarksOfflineConfig: process が無くても config があれば stopped_at を記録して成功する (issue #98)。
 func TestRunStopMarksOfflineConfig(t *testing.T) {
 	isolateConfigAndState(t)
