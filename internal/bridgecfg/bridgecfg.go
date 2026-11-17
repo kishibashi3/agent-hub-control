@@ -24,6 +24,11 @@ type BridgeConfig struct {
 	// bool でなく時刻なのは「いつから止めてあるか」を残し、「忘れられている」と区別できるようにするため。
 	// 項目の無い既存 config は空として読めるので書き換え不要。
 	StoppedAt string `json:"stopped_at,omitempty"`
+	// Bin は起動する bridge binary の $BIN ($AGENT_HUB_HOME/bin) 内のファイル名 (issue #88)。
+	// 例: "bridge-claude2@6019e3d80be5"。空 = 固定しない (既定の $BIN/<type> symlink)。"/" を含む値は不可
+	// (検査は bridge package の set / spawn 時)。fleet の start --all と watchdog もこの値で起動するので、
+	// 1 体だけ別 build で動かす指定はここに持つ。
+	Bin string `json:"bin,omitempty"`
 }
 
 // Stopped は config が「止めてある」(stopped_at あり) かを返す。

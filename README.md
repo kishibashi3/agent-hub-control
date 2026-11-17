@@ -87,16 +87,16 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 
 | command | 用途 |
 |---|---|
-| `bridge spawn [<handle>] [--workdir …] [--type …] [--tenant …] [--model …]` | bridge 起動（`--model` は bridge-claude2 の `-model` に渡る。未指定なら agenthubctl は渡さず、bridge 側が `AGENT_HUB_MODEL` env か内蔵 default で解決。`--model ""` で保存値を上書きして渡さない） |
+| `bridge spawn [<handle>] [--workdir …] [--type …] [--tenant …] [--model …] [--bin …]` | bridge 起動（`--bin` は下の「bridge binary の選び方」。`--model` は bridge-claude2 の `-model` に渡る。未指定なら agenthubctl は渡さず、bridge 側が `AGENT_HUB_MODEL` env か内蔵 default で解決。`--model ""` で保存値を上書きして渡さない） |
 | `bridge stop <handle> [--timeout …]` | bridge 停止（実プロセスを発見して停止）。SIGTERM 後、bridge の graceful drain（`/compact` と未処理の便）が終わって exit するのを待つ。既定の待ち時間は bridge の drain 上限 + 1m（subprocess timeout 30m なら 37m）で、超えたときだけ SIGKILL。`--timeout 5s` などで短くできる（issue #89）。config があれば `stopped_at` を記録し、fleet（`start --all`）はその bridge を起こさなくなる。process が既に無くても記録する（issue #98）。config が壊れている等で記録できなくても process は止め、記録の失敗は非 0 終了で返す（この場合 fleet は次回また起こす） |
-| `bridge restart <handle> \| --all [--stop-timeout …]` | 再起動（display_name / model は bridge config を再読、無ければ前回値）。stop 側は `bridge stop` と同じく graceful drain が終わるまで待ってから再 spawn する。既定の待ち時間は bridge の drain 上限 + 1m（`--stop-timeout` で変更、超えたら SIGKILL して再 spawn。SIGKILL 後 5 秒たってもプロセスが残っている場合は再 spawn せずエラーで終了する）。drain を待っている間も state のエントリは残すので、待機中に Ctrl-C・SSH 切断・SIGKILL などで restart が終わっても bridge は state から消えない。旧プロセスが終わった後、config のある bridge は fleet の `bridge start --all` が再 spawn し、config の無い bridge は `bridge restart <handle>` をもう一度実行すれば再 spawn できる。旧プロセスが終わってから restart が再 spawn に移るまでの間に fleet などが先に再 spawn した場合、restart は二重に起動せずエラーで終了する（bridge はそちらが起動したもので動いている。`bridge list` で確認）（issue #97）。単位に注意: `--stop-timeout` は duration（例 `5m`）、`--timeout` は再 spawn 後の ready 待ちで秒（例 `40`）。`--all` は 1 体ずつ順に回す（issue #92） |
+| `bridge restart <handle> \| --all [--stop-timeout …]` | 再起動（display_name / model / bin は bridge config を再読、無ければ前回値）。stop 側は `bridge stop` と同じく graceful drain が終わるまで待ってから再 spawn する。既定の待ち時間は bridge の drain 上限 + 1m（`--stop-timeout` で変更、超えたら SIGKILL して再 spawn。SIGKILL 後 5 秒たってもプロセスが残っている場合は再 spawn せずエラーで終了する）。drain を待っている間も state のエントリは残すので、待機中に Ctrl-C・SSH 切断・SIGKILL などで restart が終わっても bridge は state から消えない。旧プロセスが終わった後、config のある bridge は fleet の `bridge start --all` が再 spawn し、config の無い bridge は `bridge restart <handle>` をもう一度実行すれば再 spawn できる。旧プロセスが終わってから restart が再 spawn に移るまでの間に fleet などが先に再 spawn した場合、restart は二重に起動せずエラーで終了する（bridge はそちらが起動したもので動いている。`bridge list` で確認）（issue #97）。単位に注意: `--stop-timeout` は duration（例 `5m`）、`--timeout` は再 spawn 後の ready 待ちで秒（例 `40`）。`--all` は 1 体ずつ順に回す（issue #92） |
 | `bridge start <handle> \| --all` | 起動（config から）。`start <handle>` / `spawn` は config の `stopped_at` を消す（明示的に起こした = 動かす）。「already running」で弾かれた場合は消さない。`--all` は `stopped_at` のある bridge を `skipping @x (stopped since …)` で飛ばす（issue #98） |
 | `bridge list` | 一覧（untracked 併記、MODEL 列 = agenthubctl が渡した model。未指定は `(not passed)`） |
-| `bridge status [handle]` | 状態表示（`status <handle>` は `model: <id> (source: flag\|config\|state\|cmdline)`） |
+| `bridge status [handle]` | 状態表示（`status <handle>` は `model: <id> (source: flag\|config\|state\|cmdline)`）。LIVE の bridge は `/proc/<pid>/exe` から実際に動いている binary を出す: 一覧は `EXE`（実体のファイル名）と `SHA`（sha256 先頭 12 桁）、`status <handle>` は `bin:`（spawn 時の指定と出所）・`exe:`（実体のフルパス）・`sha256:`（全桁）。差し替え・削除された binary で動いている場合は exe に kernel の ` (deleted)` が付き、sha は動いている中身のもの。読めない場合は `-`（issue #88） |
 | `bridge sync [--dry-run]` | state と実プロセスを整合 |
 | `bridge prune [--dry-run]` | dead エントリ削除 |
 | `bridge logs [-f] <handle>` | ログ表示（agenthubctl が接続した stdout/stderr。既定 `$AGENT_HUB_HOME/logs/bridge-<handle>.out.log`、`AGENT_HUB_BRIDGE_LOG_DIR` で上書き可。旧 `/tmp/bridge-<handle>.log` は spawn / restart 時に新パスへの symlink に置き換わり移行期間中は参照可（旧バイナリが残した自己所有ログは `.pre-migration` に退避）、将来の minor で削除） |
-| `bridge config set/get/list` | spawn 引数の保存（`--workdir` / `--tenant` / `--type` / `--display-name` / `--model`）。`list` の STATE 列 / `get` の `state` は `run`（fleet が起こす）か `stopped since <時刻>`（`bridge stop` で止めてある） |
+| `bridge config set/get/list` | spawn 引数の保存（`--workdir` / `--tenant` / `--type` / `--display-name` / `--model` / `--bin`）。`list` の STATE 列 / `get` の `state` は `run`（fleet が起こす）か `stopped since <時刻>`（`bridge stop` で止めてある） |
 | `fleet install [--system\|--user] [--dry-run]` | 起動時＋定期で `bridge start --all` する boot-start + watchdog を導入 |
 | `fleet uninstall` | boot-start + watchdog を撤去（env ファイルは残す） |
 | `fleet status` | 導入状態・timer の有効/稼働・次回発火を表示 |
@@ -104,6 +104,43 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 | `inbox [--mark-read]` | 未読取得 |
 | `participants [--online-only]` | 参加者一覧 |
 | `version` | version / commit / build date |
+
+## bridge binary の選び方（issue #88）
+
+bridge の binary は `$BIN`（`$AGENT_HUB_HOME/bin`、未設定なら `~/.agent-hub/bin`）の中から選ぶ。
+**PATH は見ない**（開発用 build で黙って起動しないため、issue #74）。解決順:
+
+| 順 | 指定 | 出所 (`status` の `bin:`) |
+|---|---|---|
+| 1 | `bridge spawn --bin <name>`（その spawn だけ。state に記録） | `flag` |
+| 2 | `bridge config set <handle> --bin <name>`（永続。fleet の `start --all` / watchdog も読む） | `config` |
+| 3 | state に記録した前回の bin（restart / watchdog のみ） | `state` |
+| 4 | `AGENT_HUB_{TYPE}_BIN`（**deprecated**、移行期間のみ。使うと warning） | `env` |
+| 5 | `$BIN/<type>`（既定。bridges 側の `make deploy --activate` が `<type> -> <type>@<revision>` の symlink を張る） | `default` |
+
+どれも無ければ spawn はエラーになり、試した場所と直し方を出す。
+
+`--bin` の値は **`$BIN` の中のファイル名だけ**（例: `bridge-claude2@6019e3d80be5`、`bridge-claude2-344` のように
+`<type>@<revision>` に揃っていない名前も可）。`/` を含む値（フルパス・`..`）はエラー。`--bin ""` で固定を外して既定に戻す。
+
+```sh
+# 1 体だけ別 build で動かす（watchdog が起こし直しても同じ build のまま）
+agenthubctl bridge config set chaos-research --bin bridge-claude2@6019e3d80be5
+agenthubctl bridge restart chaos-research
+agenthubctl bridge status chaos-research    # bin: / exe: / sha256: で確認
+# 戻す
+agenthubctl bridge config set chaos-research --bin ""
+agenthubctl bridge restart chaos-research
+```
+
+1 回だけ試すなら `bridge spawn --bin` でもよいが、**1 体を別 build で動かし続けるなら config に書く**
+（restart / watchdog は state の前回値も引き継ぐが、config が正本）。
+
+どの経路の値も、symlink を辿った先の実体に対して検査する: 絶対パス・通常ファイル・実行権限・`~` / `$` を
+含まない・basename が `bridge-` で始まる（issue #82 / #50）。
+
+移行: `AGENT_HUB_{TYPE}_BIN` が設定されている間は env が既定の symlink より優先される（今までと同じ binary で
+動く）。env の行を消すと既定の `$BIN/<type>` に切り替わる。env の読み取り自体の削除は別 issue。
 
 ## fleet — durable boot + watchdog
 
@@ -177,8 +214,8 @@ tr '\0' '\n' < /proc/<pid>/environ \
 ```
 
 書式は `KEY="value"` 1 行 1 変数（systemd EnvironmentFile 互換。`export` や `$VAR` 展開は不可）。
-`AGENT_HUB_BRIDGE_CLAUDE2_BIN` のような bridge binary の場所、`claude` CLI を含む `PATH`
-（nvm / mise の bin）を忘れると spawn が fail-fast する。反映は次の watchdog tick（既定 3 分）。
+`claude` CLI を含む `PATH`（nvm / mise の bin）を忘れると spawn が fail-fast する。bridge binary の場所は
+env ではなく `$BIN` で決まる（上の「bridge binary の選び方」。`AGENT_HUB_{TYPE}_BIN` は deprecated）。反映は次の watchdog tick（既定 3 分）。
 
 - **OS 検出**: Linux + systemd → `.service` + `.timer`、macOS → launchd LaunchAgent `.plist`。
 - **scope**: root（`sudo`）なら `/etc/systemd/system` の system-level（ログイン不要で boot-start）。
@@ -218,6 +255,6 @@ agenthubctl fleet status       # 導入状態・is-enabled/is-active・次回発
 | `GITHUB_PAT` | ✓ | GitHub PAT（pat モード） |
 | `AGENT_HUB_TENANT` | | テナント ID |
 | `AGENT_HUB_USER` | | handle override |
-| `AGENT_HUB_{TYPE}_BIN` | | bridge type ごとのバイナリパス（例: `AGENT_HUB_BRIDGE_CLAUDE2_BIN`） |
-| `AGENT_HUB_HOME` | | state ディレクトリ（既定 `~/.agent-hub`） |
+| `AGENT_HUB_{TYPE}_BIN` | | **deprecated**（issue #88）。bridge type ごとのバイナリの絶対パス（例: `AGENT_HUB_BRIDGE_CLAUDE2_BIN`）。設定されていれば既定の `$BIN/<type>` より優先し、warning を出す。`~` / `$` を含む値・相対パス・実在しないパスはエラー |
+| `AGENT_HUB_HOME` | | state / logs / bin のルート（既定 `~/.agent-hub`。bridge binary は `$AGENT_HUB_HOME/bin`） |
 </content>

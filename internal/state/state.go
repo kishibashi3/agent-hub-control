@@ -29,6 +29,14 @@ type Entry struct {
 	// "state" (restart / watchdog が前回値を引き継いだ) / "cmdline" (sync が argv から採取)。
 	// operator が status で「どの model で動いていて、それはどこから来たか」を読めるようにする。
 	ModelSource string `json:"model_source,omitempty"`
+	// Bin は spawn 時に固定した bridge binary の $BIN 内ファイル名 (issue #88)。空 = 固定していない
+	// (env か既定の $BIN/<type> で起動した)。restart / watchdog は bridge config に bin が無ければこの値を
+	// 引き継ぐ (model と同じ)。
+	Bin string `json:"bin,omitempty"`
+	// BinSource は binary をどこから決めたか: "flag" (spawn --bin) / "config" (bridge config の bin) /
+	// "state" (restart / watchdog が前回値を引き継いだ) / "env" (AGENT_HUB_{TYPE}_BIN、deprecated) /
+	// "default" ($BIN/<type>)。
+	BinSource string `json:"bin_source,omitempty"`
 }
 
 // IsRunning はこの entry の handle に対応する bridge プロセスが実際に稼働しているかを返す。

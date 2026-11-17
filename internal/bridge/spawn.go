@@ -33,6 +33,7 @@ func NewSpawnCmd() *cobra.Command {
 		timeout     int
 		displayName string
 		model       string
+		bin         string
 	)
 
 	cmd := &cobra.Command{
@@ -83,9 +84,23 @@ func NewSpawnCmd() *cobra.Command {
 				ms = modelSpec{ID: cfg.Model, Source: modelSourceConfig}
 			}
 
+			// bin: 明示された --bin (空文字なら固定しない = env / 既定の symlink) > 保存 config > 固定なし (issue #88)。
+			bs := binSpec{}
+			switch {
+			case cmd.Flags().Changed("bin"):
+				if bin != "" {
+					if err := validateBinName(bin); err != nil {
+						return err
+					}
+					bs = binSpec{Name: bin, Source: binSourceFlag}
+				}
+			case cfg != nil && cfg.Bin != "":
+				bs = binSpec{Name: cfg.Bin, Source: binSourceConfig}
+			}
+
 			// 明示的な spawn は config の stopped_at を消す (issue #98)。消すのは runSpawn が running
 			// チェックを通った後 (PR #102 review Minor 2)。config が無ければ消すものも無い。
-			return runSpawn(participant, bridgeType, workdir, tenant, displayName, ms, timeout, stoppedClear)
+			return runSpawn(participant, bridgeType, workdir, tenant, displayName, ms, bs, timeout, stoppedClear)
 		},
 	}
 
@@ -98,6 +113,7 @@ func NewSpawnCmd() *cobra.Command {
 	cmd.Flags().IntVar(&timeout, "timeout", defaultSpawnTimeoutS, "seconds to wait for ready signal")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed to the bridge for register (falls back to bridge config)")
 	cmd.Flags().StringVar(&model, "model", "", "LLM model id passed to the bridge (bridge-claude2 only; falls back to bridge config; pass \"\" to override a saved model with the bridge default)")
+	cmd.Flags().StringVar(&bin, "bin", "", "bridge binary file name in $AGENT_HUB_HOME/bin (e.g. bridge-claude2@6019e3d80be5; no '/'). Falls back to bridge config; pass \"\" to use the default $AGENT_HUB_HOME/bin/<type>. Prefer `bridge config set --bin`: the fleet watchdog reads config")
 
 	return cmd
 }
@@ -144,12 +160,12 @@ type errStoppedInConfig struct{ since string }
 
 func (e *errStoppedInConfig) Error() string { return "stopped since " + e.since }
 
-func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, timeoutS int, stopped stoppedPolicy) error {
+func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, bin binSpec, timeoutS int, stopped stoppedPolicy) error {
 	if !validHandle.MatchString(participant) {
 		return fmt.Errorf("invalid handle %q: only [a-zA-Z0-9_-] allowed", participant)
 	}
 
-	binary, err := resolveBinary(bridgeType)
+	binary, err := resolveBinary(bridgeType, bin)
 	if err != nil {
 		return err
 	}
@@ -265,7 +281,7 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 		fmt.Fprintf(os.Stderr, "warning: model %q is only passed to bridge-claude2; ignored for %s\n", model.ID, bridgeType)
 	}
 
-	proc := exec.Command(binary, args...)
+	proc := exec.Command(binary.Path, args...)
 	logOut, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		unlock()
@@ -279,7 +295,7 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 	// プロセスグループから切り離す (nohup 相当)
 	setSysProcAttr(proc)
 
-	fmt.Fprintf(os.Stderr, "starting @%s (type=%s, workdir=%s, log=%s)\n", participant, bridgeType, wd, logPath)
+	fmt.Fprintf(os.Stderr, "starting @%s (type=%s, bin=%s -> %s (source: %s), workdir=%s, log=%s)\n", participant, bridgeType, binary.Path, binary.Real, binary.Source, wd, logPath)
 
 	if err := proc.Start(); err != nil {
 		unlock()
@@ -290,6 +306,10 @@ func runSpawn(participant, bridgeType, workdir, tenantFlag, displayName string, 
 
 	// PID をロック保持中に即保存してから解放する
 	st.Set(participant, pid, bridgeType, wd, tenant, model.ID, model.stateSource(), logPath)
+	// bin: 固定指定 (flag / config / state) なら名前を記録し、restart / watchdog が引き継ぐ。env / default は
+	// 名前を記録しない (次回も env / 既定の symlink を辿り直す)。出所はどの場合も記録する (issue #88)。
+	st.Bridges[participant].Bin = binary.Name
+	st.Bridges[participant].BinSource = binary.Source
 	if err := st.Save(); err != nil {
 		unlock()
 		return fmt.Errorf("save state: %w", err)
@@ -429,59 +449,6 @@ func warnLegacyLogPath(handle, logPath string) {
 		fmt.Fprintf(os.Stderr, "warning: @%s log_path %s is the deprecated /tmp location; restart the bridge to move it under AGENT_HUB_HOME/logs\n", handle, logPath)
 	}
 }
-
-// resolveBinary は bridgeType に対応するバイナリのパスを解決する。
-// 優先順位: AGENT_HUB_{TYPE}_BIN env > PATH の {bridgeType}
-// 例: bridge-claude2 → AGENT_HUB_BRIDGE_CLAUDE2_BIN
-func resolveBinary(bridgeType string) (string, error) {
-	typeUpper := strings.ToUpper(strings.ReplaceAll(bridgeType, "-", "_"))
-	envVar := "AGENT_HUB_" + typeUpper + "_BIN"
-	if binEnv := os.Getenv(envVar); binEnv != "" {
-		if _, err := os.Stat(binEnv); err != nil {
-			return "", fmt.Errorf("%s=%q not found: %w", envVar, binEnv, err)
-		}
-		if err := checkBridgeBinaryName(binEnv); err != nil {
-			return "", fmt.Errorf("%s=%q: %w", envVar, binEnv, err)
-		}
-		return binEnv, nil
-	}
-
-	path, err := exec.LookPath(bridgeType)
-	if err != nil {
-		return "", fmt.Errorf("%s not found in PATH. Set %s or add %s to PATH", bridgeType, envVar, bridgeType)
-	}
-	if err := checkBridgeBinaryName(path); err != nil {
-		return "", fmt.Errorf("%s resolved to %q: %w", bridgeType, path, err)
-	}
-	return path, nil
-}
-
-// checkBridgeBinaryName は spawn するバイナリが IsBridgeProcess (argv[0] + /proc/<pid>/exe) の
-// 両方の判定を通る名前かを、spawn 前に検査する。argv[0] には与えられたパス p がそのまま入るが、
-// kernel が exe として報告するのは symlink を解決した実体なので、両方の basename を見る
-// (issue #50 review Minor 1: `bridge-x → symlink → bridge` は argv 判定だけ通り、起動後に恒久 dead
-// 判定されて watchdog が重複 spawn する)。
-func checkBridgeBinaryName(p string) error {
-	if !state.LooksLikeBridgeExe(p) {
-		return errors.New(bridgeBinaryNameHint)
-	}
-	real, err := filepath.EvalSymlinks(p)
-	if err != nil {
-		return fmt.Errorf("resolve symlinks: %w", err)
-	}
-	if !state.LooksLikeBridgeExe(real) {
-		return fmt.Errorf("symlink target %q: %s", real, bridgeBinaryNameHint)
-	}
-	return nil
-}
-
-// bridgeBinaryNameHint は bridge バイナリの命名不変条件を破ったときのエラー文。
-// IsRunning / pgrepHandle は argv[0] と /proc/<pid>/exe の basename が "bridge-" で始まることで
-// 本物の bridge を識別する (issue #47 / #50)。この不変条件を満たさないバイナリを spawn すると、
-// 起動直後から恒久的に dead 判定され fleet watchdog が毎 tick 重複 spawn するため、spawn 時点で拒否する。
-// exe は symlink 解決後の実ファイルを指すため、symlink や wrapper の名前を変えても通らない —
-// 実体 (ELF) 自体を "bridge-*" に rename する必要がある。
-const bridgeBinaryNameHint = "bridge binary basename must start with \"bridge-\" (process identification relies on it; rename the real binary itself — a symlink or wrapper named bridge-* is not enough because /proc/<pid>/exe resolves to the target)"
 
 // readyPatternFor は bridge type ごとの起動完了シグナル文字列を返す。
 func readyPatternFor(bridgeType string) string {
