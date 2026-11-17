@@ -8,10 +8,14 @@
 package state
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // ReadCmdline は /proc/<pid>/cmdline を読んでプロセスの argv を返す。
@@ -165,4 +169,36 @@ func IsBridgeProcess(pid int, handle string) (bool, error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// ReadExeRaw は /proc/<pid>/exe の readlink 結果をそのまま返す。ReadExe と違い、実行中に
+// 置き換え・削除されたときに kernel が付ける " (deleted)" を残す (status 表示用、issue #88)。
+func ReadExeRaw(pid int) (string, error) {
+	return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+}
+
+// ExeFileID は /proc/<pid>/exe が指すファイルの (dev, inode) を返す。同じ binary で動いている
+// bridge の sha を 1 回だけ計算するためのキー (issue #88)。
+func ExeFileID(pid int) (uint64, uint64, error) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(fmt.Sprintf("/proc/%d/exe", pid), &st); err != nil {
+		return 0, 0, err
+	}
+	return uint64(st.Dev), uint64(st.Ino), nil
+}
+
+// ExeSHA256 は /proc/<pid>/exe を開いて中身の sha256 (hex) を返す。パスを開き直すのではなく
+// /proc/<pid>/exe を開くので、ファイルが差し替え・削除された後でも「実際に動いている中身」の sha になる
+// (issue #88)。
+func ExeSHA256(pid int) (string, error) {
+	f, err := os.Open(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

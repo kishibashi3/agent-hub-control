@@ -18,8 +18,8 @@ const restartKillGrace = 5 * time.Second
 
 // restartSpawn は re-spawn の実体。テストで差し替える (実 bridge binary を起動させないため)。
 // restart は config の stopped_at を見ない / 変えない (issue #98: 記録も消去もしない)。
-var restartSpawn = func(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, timeoutS int) error {
-	return runSpawn(participant, bridgeType, workdir, tenantFlag, displayName, model, timeoutS, stoppedIgnore)
+var restartSpawn = func(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, bin binSpec, timeoutS int) error {
+	return runSpawn(participant, bridgeType, workdir, tenantFlag, displayName, model, bin, timeoutS, stoppedIgnore)
 }
 
 func NewRestartCmd() *cobra.Command {
@@ -101,9 +101,15 @@ func runRestart(handle, displayName string, spawnTimeoutS int, stopTimeout time.
 	// (`config set X --model foo` → `restart X` で新 model が効く、PR #67 review Minor 1)。
 	// config に無ければ state に記録された前回値を引き継ぐ (config 無しで spawn された bridge 用)。
 	savedModel := modelSpec{ID: entry.Model, Source: modelSourceState}
-	if cfg, cfgErr := bridgecfg.Load(handle); cfgErr == nil && cfg != nil && cfg.Model != "" {
-		savedModel = modelSpec{ID: cfg.Model, Source: modelSourceConfig}
+	cfgBin := ""
+	if cfg, cfgErr := bridgecfg.Load(handle); cfgErr == nil && cfg != nil {
+		if cfg.Model != "" {
+			savedModel = modelSpec{ID: cfg.Model, Source: modelSourceConfig}
+		}
+		cfgBin = cfg.Bin
 	}
+	// bin も同じく config > state の前回値 (issue #88)。どちらも無ければ env / 既定の symlink。
+	savedBin := pinFromConfigOrState(entry, cfgBin)
 	if savedBridgeType == "" {
 		savedBridgeType = defaultBridgeType
 	}
@@ -168,7 +174,7 @@ func runRestart(handle, displayName string, spawnTimeoutS int, stopTimeout time.
 
 	// ── 3. spawn ─────────────────────────────────────────────────────────
 	fmt.Fprintf(os.Stderr, "re-spawning @%s (type=%s, workdir=%s)...\n", handle, savedBridgeType, savedWorkdir)
-	return restartSpawn(handle, savedBridgeType, savedWorkdir, savedTenant, displayName, savedModel, spawnTimeoutS)
+	return restartSpawn(handle, savedBridgeType, savedWorkdir, savedTenant, displayName, savedModel, savedBin, spawnTimeoutS)
 }
 
 // runRestartAll は既知の bridge を 1 体ずつ順に restart する (並列化はしない、issue #92)。
