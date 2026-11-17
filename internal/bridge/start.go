@@ -53,7 +53,7 @@ func runStartOne(handle string, timeout int) error {
 		bridgeType = defaultBridgeType
 	}
 	// stopped_at は runSpawn が running チェックを通った後に消す (issue #98, PR #102 review Minor 2)。
-	return runSpawn(handle, bridgeType, cfg.Workdir, cfg.Tenant, cfg.DisplayName, modelSpec{ID: cfg.Model, Source: modelSourceConfig}, timeout, stoppedClear)
+	return runSpawn(handle, bridgeType, cfg.Workdir, cfg.Tenant, cfg.DisplayName, modelSpec{ID: cfg.Model, Source: modelSourceConfig}, configBin(cfg), timeout, stoppedClear)
 }
 
 func runStartAll(timeout int) error {
@@ -100,7 +100,7 @@ func runStartAll(timeout int) error {
 			bridgeType = defaultBridgeType
 		}
 		fmt.Fprintf(os.Stderr, "starting @%s (type=%s, workdir=%s)...\n", cfg.Handle, bridgeType, cfg.Workdir)
-		err := runSpawn(cfg.Handle, bridgeType, cfg.Workdir, cfg.Tenant, cfg.DisplayName, modelSpec{ID: cfg.Model, Source: modelSourceConfig}, timeout, stoppedSkip)
+		err := runSpawn(cfg.Handle, bridgeType, cfg.Workdir, cfg.Tenant, cfg.DisplayName, modelSpec{ID: cfg.Model, Source: modelSourceConfig}, configBin(cfg), timeout, stoppedSkip)
 		var stoppedErr *errStoppedInConfig
 		if errors.As(err, &stoppedErr) {
 			fmt.Fprintf(os.Stderr, "skipping @%s (%v)\n", cfg.Handle, stoppedErr)
@@ -136,4 +136,12 @@ func clearStoppedForExplicitStart(handle string) error {
 		fmt.Fprintf(os.Stderr, "note: cleared stopped_at for @%s (fleet will start it again)\n", handle)
 	}
 	return nil
+}
+
+// configBin は bridge config の bin を固定指定にする (start / start --all、issue #88)。
+func configBin(cfg *bridgecfg.BridgeConfig) binSpec {
+	if cfg == nil || cfg.Bin == "" {
+		return binSpec{}
+	}
+	return binSpec{Name: cfg.Bin, Source: binSourceConfig}
 }

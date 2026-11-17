@@ -24,8 +24,11 @@
 //	AGENT_HUB_TENANT                optional  テナント ID
 //	GITHUB_PAT                      required  GitHub Personal Access Token
 //	AGENT_HUB_USER                  optional  handle override (pat モード) / handle (trust モード)
-//	AGENT_HUB_BRIDGE_CLAUDE2_BIN    optional  bridge-claude2 バイナリパス
-//	AGENT_HUB_{TYPE}_BIN            optional  任意 bridge type のバイナリパス (例: AGENT_HUB_BRIDGE_CODEX2_BIN)
+//	AGENT_HUB_BRIDGE_CLAUDE2_BIN    deprecated  bridge-claude2 バイナリの絶対パス (issue #88)
+//	AGENT_HUB_{TYPE}_BIN            deprecated  任意 bridge type のバイナリの絶対パス (例: AGENT_HUB_BRIDGE_CODEX2_BIN)。
+//	                                            設定されていれば既定の $AGENT_HUB_HOME/bin/<type> より優先し warning を出す。
+//	                                            bridge binary は $AGENT_HUB_HOME/bin から選ぶ (bridge config set --bin <name>)。
+//	                                            PATH は見ない
 package main
 
 import (
