@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 )
 
@@ -41,7 +42,9 @@ const (
 )
 
 // resolvedBinary は resolveBinary の結果。Path は exec に渡すパス (symlink のまま)、Real は symlink を
-// 辿った先の実体。Name は state に記録する固定指定 (flag / config / state のときだけ非空)。
+// 辿った先の実体。Real ではなく Path を exec するのは argv[0] を $BIN/<type> のまま保つため (sync は argv[0]
+// の basename を bridge type として拾い直す)。検査から exec までの間に symlink が張り替えられると、ログの
+// Real と実際に動く build がずれうる。$BIN に書けるのは同じ uid だけなので許容する (PR #104 review Suggestion 6)。Name は state に記録する固定指定 (flag / config / state のときだけ非空)。
 type resolvedBinary struct {
 	Path   string
 	Real   string
@@ -170,13 +173,18 @@ func checkBridgeBinary(p string) (string, error) {
 const bridgeBinaryNameHint = "bridge binary basename must start with \"bridge-\" (process identification relies on it; rename the real binary itself — a symlink or wrapper named bridge-* is not enough because /proc/<pid>/exe resolves to the target)"
 
 // pinFromConfigOrState は restart / watchdog の固定指定: bridge config の bin > state に記録した前回の bin。
-// config が読めない場合は state にフォールバックする (model の restart と同じく config 読み取り失敗で止めない)。
-func pinFromConfigOrState(entry *state.Entry, cfgBin string) binSpec {
-	if cfgBin != "" {
-		return binSpec{Name: cfgBin, Source: binSourceConfig}
+// cfg は読めた bridge config (無い・読めないなら nil)。config が読めない場合は state にフォールバックする
+// (model の restart と同じく config 読み取り失敗で止めない)。
+//
+// state の前回値が config 由来 (BinSource == "config") で、いまの config の bin が空なら固定しない。
+// `config set --bin ""` → restart / watchdog で固定が外れるようにするため (PR #104 review 指摘 1)。
+// spawn --bin (flag) 由来の値は config が空でも引き継ぐ (spawn が作る config には bin を書かないため)。
+func pinFromConfigOrState(entry *state.Entry, cfg *bridgecfg.BridgeConfig) binSpec {
+	if cfg != nil && cfg.Bin != "" {
+		return binSpec{Name: cfg.Bin, Source: binSourceConfig}
 	}
-	if entry != nil && entry.Bin != "" {
-		return binSpec{Name: entry.Bin, Source: binSourceState}
+	if entry == nil || entry.Bin == "" || (cfg != nil && entry.BinSource == binSourceConfig) {
+		return binSpec{}
 	}
-	return binSpec{}
+	return binSpec{Name: entry.Bin, Source: binSourceState}
 }

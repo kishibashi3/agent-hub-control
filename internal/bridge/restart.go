@@ -101,15 +101,15 @@ func runRestart(handle, displayName string, spawnTimeoutS int, stopTimeout time.
 	// (`config set X --model foo` → `restart X` で新 model が効く、PR #67 review Minor 1)。
 	// config に無ければ state に記録された前回値を引き継ぐ (config 無しで spawn された bridge 用)。
 	savedModel := modelSpec{ID: entry.Model, Source: modelSourceState}
-	cfgBin := ""
-	if cfg, cfgErr := bridgecfg.Load(handle); cfgErr == nil && cfg != nil {
-		if cfg.Model != "" {
-			savedModel = modelSpec{ID: cfg.Model, Source: modelSourceConfig}
-		}
-		cfgBin = cfg.Bin
+	cfg, cfgErr := bridgecfg.Load(handle)
+	if cfgErr != nil {
+		cfg = nil
+	}
+	if cfg != nil && cfg.Model != "" {
+		savedModel = modelSpec{ID: cfg.Model, Source: modelSourceConfig}
 	}
 	// bin も同じく config > state の前回値 (issue #88)。どちらも無ければ env / 既定の symlink。
-	savedBin := pinFromConfigOrState(entry, cfgBin)
+	savedBin := pinFromConfigOrState(entry, cfg)
 	if savedBridgeType == "" {
 		savedBridgeType = defaultBridgeType
 	}

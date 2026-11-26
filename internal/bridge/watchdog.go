@@ -241,9 +241,9 @@ func currentPID(handle string) int {
 // respawnBin は watchdog respawn の bin: bridge config > state の前回値 (issue #88)。config を正本にするのは、
 // 1 体だけ別 build にした bridge が watchdog の respawn で黙って既定の symlink の版に戻らないようにするため。
 func respawnBin(e state.Entry) binSpec {
-	cfgBin := ""
-	if cfg, err := bridgecfg.Load(e.Handle); err == nil && cfg != nil {
-		cfgBin = cfg.Bin
+	cfg, err := bridgecfg.Load(e.Handle)
+	if err != nil {
+		cfg = nil
 	}
-	return pinFromConfigOrState(&e, cfgBin)
+	return pinFromConfigOrState(&e, cfg)
 }

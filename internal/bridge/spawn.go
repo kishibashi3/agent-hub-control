@@ -85,17 +85,9 @@ func NewSpawnCmd() *cobra.Command {
 			}
 
 			// bin: 明示された --bin (空文字なら固定しない = env / 既定の symlink) > 保存 config > 固定なし (issue #88)。
-			bs := binSpec{}
-			switch {
-			case cmd.Flags().Changed("bin"):
-				if bin != "" {
-					if err := validateBinName(bin); err != nil {
-						return err
-					}
-					bs = binSpec{Name: bin, Source: binSourceFlag}
-				}
-			case cfg != nil && cfg.Bin != "":
-				bs = binSpec{Name: cfg.Bin, Source: binSourceConfig}
+			bs, err := spawnBinSpec(cmd.Flags().Changed("bin"), bin, cfg)
+			if err != nil {
+				return err
 			}
 
 			// 明示的な spawn は config の stopped_at を消す (issue #98)。消すのは runSpawn が running
@@ -569,4 +561,22 @@ func pgrepHandle(handle string) (int, error) {
 // 実プロセス判定は state.IsBridgeProcess (argv + exe) を直接使う (issue #50)。
 func looksLikeBridgeProcess(argv []string, handle string) bool {
 	return state.LooksLikeBridgeProcess(argv, handle)
+}
+
+// spawnBinSpec は spawn の固定指定: 明示された --bin (空文字なら固定しない) > 保存 config の bin > 固定なし。
+// flagSet は --bin が指定されたか (`--bin ""` と未指定を区別する)。
+func spawnBinSpec(flagSet bool, bin string, cfg *bridgecfg.BridgeConfig) (binSpec, error) {
+	switch {
+	case flagSet:
+		if bin == "" {
+			return binSpec{}, nil
+		}
+		if err := validateBinName(bin); err != nil {
+			return binSpec{}, err
+		}
+		return binSpec{Name: bin, Source: binSourceFlag}, nil
+	case cfg != nil && cfg.Bin != "":
+		return binSpec{Name: cfg.Bin, Source: binSourceConfig}, nil
+	}
+	return binSpec{}, nil
 }

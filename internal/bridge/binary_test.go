@@ -3,6 +3,7 @@ package bridge
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -193,16 +194,27 @@ func TestResolveBinaryEnvDeprecated(t *testing.T) {
 }
 
 // TestPinFromConfigOrState: restart / watchdog は config の bin > state の前回値 > 固定なし。
+// state の値が config 由来で、いまの config の bin が空なら固定しない (PR #104 review 指摘 1)。
 func TestPinFromConfigOrState(t *testing.T) {
-	e := &state.Entry{Bin: "bridge-claude2@state"}
-	if got := pinFromConfigOrState(e, "bridge-claude2@cfg"); got != (binSpec{Name: "bridge-claude2@cfg", Source: binSourceConfig}) {
-		t.Errorf("config: %+v", got)
-	}
-	if got := pinFromConfigOrState(e, ""); got != (binSpec{Name: "bridge-claude2@state", Source: binSourceState}) {
-		t.Errorf("state: %+v", got)
-	}
-	if got := pinFromConfigOrState(&state.Entry{}, ""); got != (binSpec{}) {
-		t.Errorf("none: %+v", got)
+	flagPin := &state.Entry{Bin: "bridge-claude2@state", BinSource: binSourceFlag}
+	cfgPin := &state.Entry{Bin: "bridge-claude2@state", BinSource: binSourceConfig}
+	stateBin := binSpec{Name: "bridge-claude2@state", Source: binSourceState}
+	for _, c := range []struct {
+		name  string
+		entry *state.Entry
+		cfg   *bridgecfg.BridgeConfig
+		want  binSpec
+	}{
+		{"config bin wins", flagPin, &bridgecfg.BridgeConfig{Bin: "bridge-claude2@cfg"}, binSpec{Name: "bridge-claude2@cfg", Source: binSourceConfig}},
+		{"no config, flag pin", flagPin, nil, stateBin},
+		{"no config, config pin", cfgPin, nil, stateBin},
+		{"empty config bin, flag pin", flagPin, &bridgecfg.BridgeConfig{}, stateBin},
+		{"empty config bin, config pin (unpinned)", cfgPin, &bridgecfg.BridgeConfig{}, binSpec{}},
+		{"nothing", &state.Entry{}, nil, binSpec{}},
+	} {
+		if got := pinFromConfigOrState(c.entry, c.cfg); got != c.want {
+			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -220,11 +232,86 @@ func TestRespawnBinReadsConfig(t *testing.T) {
 	if got := respawnBin(e); got != (binSpec{Name: "bridge-claude2@cfg", Source: binSourceConfig}) {
 		t.Errorf("with config: %+v", got)
 	}
+	// config set --bin "" の後: config 由来の固定は外れる (PR #104 review 指摘 1)
+	if err := bridgecfg.Save(&bridgecfg.BridgeConfig{Handle: e.Handle}); err != nil {
+		t.Fatal(err)
+	}
+	e.BinSource = binSourceConfig
+	if got := respawnBin(e); got != (binSpec{}) {
+		t.Errorf("config bin cleared: %+v", got)
+	}
+}
+
+// TestSpawnBinSpec: spawn は --bin (空なら固定なし) > config の bin。--bin "" と未指定を区別する。
+func TestSpawnBinSpec(t *testing.T) {
+	cfg := &bridgecfg.BridgeConfig{Bin: "bridge-claude2@cfg"}
+	for _, c := range []struct {
+		name    string
+		flagSet bool
+		bin     string
+		cfg     *bridgecfg.BridgeConfig
+		want    binSpec
+	}{
+		{"flag", true, "bridge-claude2@f", cfg, binSpec{Name: "bridge-claude2@f", Source: binSourceFlag}},
+		{"flag empty overrides config", true, "", cfg, binSpec{}},
+		{"unset uses config", false, "", cfg, binSpec{Name: "bridge-claude2@cfg", Source: binSourceConfig}},
+		{"unset, no config", false, "", nil, binSpec{}},
+	} {
+		got, err := spawnBinSpec(c.flagSet, c.bin, c.cfg)
+		if err != nil || got != c.want {
+			t.Errorf("%s: %+v, %v; want %+v", c.name, got, err, c.want)
+		}
+	}
+	if _, err := spawnBinSpec(true, "../bridge-claude2", nil); err == nil {
+		t.Error("path in --bin: want error")
+	}
+}
+
+// TestConfigGetListShowBin: config get / list は bin を表示し、未設定は (default)。
+func TestConfigGetListShowBin(t *testing.T) {
+	isolateConfigAndState(t)
+	for _, c := range []*bridgecfg.BridgeConfig{{Handle: "__bin_show_a__", Bin: "bridge-claude2@aaa"}, {Handle: "__bin_show_b__"}} {
+		if err := bridgecfg.Save(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := captureStdout(t, func() {
+		cmd := newConfigGetCmd()
+		cmd.SetArgs([]string{"__bin_show_a__"})
+		if err := cmd.Execute(); err != nil {
+			t.Error(err)
+		}
+	})
+	if !regexp.MustCompile(`(?m)^bin\s+bridge-claude2@aaa$`).MatchString(get) {
+		t.Errorf("get: %q", get)
+	}
+	list := captureStdout(t, func() {
+		cmd := newConfigListCmd()
+		cmd.SetArgs([]string{})
+		if err := cmd.Execute(); err != nil {
+			t.Error(err)
+		}
+	})
+	if !strings.Contains(list, "bridge-claude2@aaa") || !strings.Contains(list, "(default)") {
+		t.Errorf("list: %q", list)
+	}
 }
 
 // TestRunRestartPassesBin: restart は config の bin、無ければ state の前回値で re-spawn する。
+// `config set --bin ""` → restart で config 由来の固定が外れる (PR #104 review 指摘 1)。
 func TestRunRestartPassesBin(t *testing.T) {
-	for _, withCfg := range []bool{false, true} {
+	stateBin := binSpec{Name: "bridge-claude2@state", Source: binSourceState}
+	for _, c := range []struct {
+		name     string
+		stateSrc string
+		cfg      *bridgecfg.BridgeConfig
+		want     binSpec
+	}{
+		{"no config", binSourceFlag, nil, stateBin},
+		{"config bin", binSourceFlag, &bridgecfg.BridgeConfig{Bin: "bridge-claude2@cfg"}, binSpec{Name: "bridge-claude2@cfg", Source: binSourceConfig}},
+		{"config without bin, flag pin", binSourceFlag, &bridgecfg.BridgeConfig{}, stateBin},
+		{"config bin cleared, config pin", binSourceConfig, &bridgecfg.BridgeConfig{}, binSpec{}},
+	} {
 		handle := "__bin_restart_test__"
 		setupRestartEntry(t, handle, deadPID(t))
 		st, unlock, err := state.LoadLocked()
@@ -232,17 +319,16 @@ func TestRunRestartPassesBin(t *testing.T) {
 			t.Fatal(err)
 		}
 		st.Get(handle).Bin = "bridge-claude2@state"
-		st.Get(handle).BinSource = binSourceFlag
+		st.Get(handle).BinSource = c.stateSrc
 		if err := st.Save(); err != nil {
 			t.Fatal(err)
 		}
 		unlock()
-		want := binSpec{Name: "bridge-claude2@state", Source: binSourceState}
-		if withCfg {
-			if err := bridgecfg.Save(&bridgecfg.BridgeConfig{Handle: handle, Bin: "bridge-claude2@cfg"}); err != nil {
+		if c.cfg != nil {
+			c.cfg.Handle = handle
+			if err := bridgecfg.Save(c.cfg); err != nil {
 				t.Fatal(err)
 			}
-			want = binSpec{Name: "bridge-claude2@cfg", Source: binSourceConfig}
 		}
 
 		var got binSpec
@@ -254,10 +340,10 @@ func TestRunRestartPassesBin(t *testing.T) {
 		err = runRestart(handle, "", 1, time.Second)
 		restartSpawn = orig
 		if err != nil {
-			t.Fatalf("runRestart: %v", err)
+			t.Fatalf("%s: runRestart: %v", c.name, err)
 		}
-		if got != want {
-			t.Errorf("withCfg=%v: re-spawn bin = %+v, want %+v", withCfg, got, want)
+		if got != c.want {
+			t.Errorf("%s: re-spawn bin = %+v, want %+v", c.name, got, c.want)
 		}
 	}
 }

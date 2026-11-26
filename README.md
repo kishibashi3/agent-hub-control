@@ -89,7 +89,7 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 |---|---|
 | `bridge spawn [<handle>] [--workdir …] [--type …] [--tenant …] [--model …] [--bin …]` | bridge 起動（`--bin` は下の「bridge binary の選び方」。`--model` は bridge-claude2 の `-model` に渡る。未指定なら agenthubctl は渡さず、bridge 側が `AGENT_HUB_MODEL` env か内蔵 default で解決。`--model ""` で保存値を上書きして渡さない） |
 | `bridge stop <handle> [--timeout …]` | bridge 停止（実プロセスを発見して停止）。SIGTERM 後、bridge の graceful drain（`/compact` と未処理の便）が終わって exit するのを待つ。既定の待ち時間は bridge の drain 上限 + 1m（subprocess timeout 30m なら 37m）で、超えたときだけ SIGKILL。`--timeout 5s` などで短くできる（issue #89）。config があれば `stopped_at` を記録し、fleet（`start --all`）はその bridge を起こさなくなる。process が既に無くても記録する（issue #98）。config が壊れている等で記録できなくても process は止め、記録の失敗は非 0 終了で返す（この場合 fleet は次回また起こす） |
-| `bridge restart <handle> \| --all [--stop-timeout …]` | 再起動（display_name / model / bin は bridge config を再読、無ければ前回値）。stop 側は `bridge stop` と同じく graceful drain が終わるまで待ってから再 spawn する。既定の待ち時間は bridge の drain 上限 + 1m（`--stop-timeout` で変更、超えたら SIGKILL して再 spawn。SIGKILL 後 5 秒たってもプロセスが残っている場合は再 spawn せずエラーで終了する）。drain を待っている間も state のエントリは残すので、待機中に Ctrl-C・SSH 切断・SIGKILL などで restart が終わっても bridge は state から消えない。旧プロセスが終わった後、config のある bridge は fleet の `bridge start --all` が再 spawn し、config の無い bridge は `bridge restart <handle>` をもう一度実行すれば再 spawn できる。旧プロセスが終わってから restart が再 spawn に移るまでの間に fleet などが先に再 spawn した場合、restart は二重に起動せずエラーで終了する（bridge はそちらが起動したもので動いている。`bridge list` で確認）（issue #97）。単位に注意: `--stop-timeout` は duration（例 `5m`）、`--timeout` は再 spawn 後の ready 待ちで秒（例 `40`）。`--all` は 1 体ずつ順に回す（issue #92） |
+| `bridge restart <handle> \| --all [--stop-timeout …]` | 再起動（display_name / model / bin は bridge config を再読、無ければ前回値。bin は config で付けた固定なら `config set --bin ""` で外れる）。stop 側は `bridge stop` と同じく graceful drain が終わるまで待ってから再 spawn する。既定の待ち時間は bridge の drain 上限 + 1m（`--stop-timeout` で変更、超えたら SIGKILL して再 spawn。SIGKILL 後 5 秒たってもプロセスが残っている場合は再 spawn せずエラーで終了する）。drain を待っている間も state のエントリは残すので、待機中に Ctrl-C・SSH 切断・SIGKILL などで restart が終わっても bridge は state から消えない。旧プロセスが終わった後、config のある bridge は fleet の `bridge start --all` が再 spawn し、config の無い bridge は `bridge restart <handle>` をもう一度実行すれば再 spawn できる。旧プロセスが終わってから restart が再 spawn に移るまでの間に fleet などが先に再 spawn した場合、restart は二重に起動せずエラーで終了する（bridge はそちらが起動したもので動いている。`bridge list` で確認）（issue #97）。単位に注意: `--stop-timeout` は duration（例 `5m`）、`--timeout` は再 spawn 後の ready 待ちで秒（例 `40`）。`--all` は 1 体ずつ順に回す（issue #92） |
 | `bridge start <handle> \| --all` | 起動（config から）。`start <handle>` / `spawn` は config の `stopped_at` を消す（明示的に起こした = 動かす）。「already running」で弾かれた場合は消さない。`--all` は `stopped_at` のある bridge を `skipping @x (stopped since …)` で飛ばす（issue #98） |
 | `bridge list` | 一覧（untracked 併記、MODEL 列 = agenthubctl が渡した model。未指定は `(not passed)`） |
 | `bridge status [handle]` | 状態表示（`status <handle>` は `model: <id> (source: flag\|config\|state\|cmdline)`、`bin: <name> (source: flag\|config\|state)`、固定なしなら出所 env / default を表示（issue #88）） |
@@ -114,7 +114,7 @@ bridge の binary は `$BIN`（`$AGENT_HUB_HOME/bin`、未設定なら `~/.agent
 |---|---|---|
 | 1 | `bridge spawn --bin <name>`（その spawn だけ。state に記録） | `flag` |
 | 2 | `bridge config set <handle> --bin <name>`（永続。fleet の `start --all` / watchdog も読む） | `config` |
-| 3 | state に記録した前回の bin（restart / watchdog のみ） | `state` |
+| 3 | state に記録した前回の bin（restart / watchdog のみ。config の bin で固定した値は、config の bin を空にすると引き継がない） | `state` |
 | 4 | `AGENT_HUB_{TYPE}_BIN`（**deprecated**、移行期間のみ。使うと warning） | `env` |
 | 5 | `$BIN/<type>`（既定。bridges 側の `make deploy --activate` が `<type> -> <type>@<revision>` の symlink を張る） | `default` |
 
@@ -134,7 +134,12 @@ agenthubctl bridge restart chaos-research
 ```
 
 1 回だけ試すなら `bridge spawn --bin` でもよいが、**1 体を別 build で動かし続けるなら config に書く**
-（restart / watchdog は state の前回値も引き継ぐが、config が正本）。
+（restart / watchdog は `spawn --bin` の値を state から引き継ぐが、fleet の `start --all` は引き継がず
+config の bin か既定の build で起こす。config が正本）。
+
+`bridge watchdog` は respawn の前に死んだエントリを state から消す。固定した名前が `$BIN` から消えていると
+respawn はエラーになり、次の `start --all` は config の bin で起こす（`spawn --bin` だけの固定はここで外れ、
+既定の build で起動する）。固定した build を `$BIN` から消す前に `config set --bin ""` で外しておく。
 
 どの経路の値も、symlink を辿った先の実体に対して検査する: 絶対パス・通常ファイル・実行権限・`~` / `$` を
 含まない・basename が `bridge-` で始まる（issue #82 / #50）。
