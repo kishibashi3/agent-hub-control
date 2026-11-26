@@ -113,7 +113,7 @@ func TestRunSpawnSkipRereadsConfig(t *testing.T) {
 	if err := bridgecfg.Save(&bridgecfg.BridgeConfig{Handle: handle, Workdir: t.TempDir(), StoppedAt: "2026-11-16T00:00:00.000Z"}); err != nil {
 		t.Fatal(err)
 	}
-	err := runSpawn(handle, bt, t.TempDir(), "", "", modelSpec{}, 1, stoppedSkip)
+	err := runSpawn(handle, bt, t.TempDir(), "", "", modelSpec{}, binSpec{}, 1, stoppedSkip)
 	var se *errStoppedInConfig
 	if !errors.As(err, &se) {
 		t.Fatalf("runSpawn(stoppedSkip) on a stopped config = %v; want errStoppedInConfig", err)
@@ -136,7 +136,7 @@ func TestRunSpawnClearKeepsStoppedWhenRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	startTermDelayProc(t, handle, "0") // まだ drain 中の bridge (pgrep に見える)
-	err := runSpawn(handle, bt, t.TempDir(), "", "", modelSpec{}, 1, stoppedClear)
+	err := runSpawn(handle, bt, t.TempDir(), "", "", modelSpec{}, binSpec{}, 1, stoppedClear)
 	if err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("runSpawn = %v; want already running", err)
 	}

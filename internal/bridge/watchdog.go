@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
 	"github.com/kishibashi3/agent-hub-control/internal/hub"
 	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
@@ -131,7 +132,7 @@ func runWatchdogOnce() (onceSummary, error) {
 		wg.Add(1)
 		go func(i int, e state.Entry) {
 			defer wg.Done()
-			err := runSpawn(e.Handle, e.BridgeType, e.Workdir, e.Tenant, "", modelSpec{ID: e.Model, Source: modelSourceState}, defaultSpawnTimeoutS, stoppedIgnore)
+			err := runSpawn(e.Handle, e.BridgeType, e.Workdir, e.Tenant, "", modelSpec{ID: e.Model, Source: modelSourceState}, respawnBin(e), defaultSpawnTimeoutS, stoppedIgnore)
 			results[i] = respawnResult{handle: e.Handle, err: err}
 		}(i, e)
 	}
@@ -235,4 +236,14 @@ func currentPID(handle string) int {
 		return e.PID
 	}
 	return 0
+}
+
+// respawnBin は watchdog respawn の bin: bridge config > state の前回値 (issue #88)。config を正本にするのは、
+// 1 体だけ別 build にした bridge が watchdog の respawn で黙って既定の symlink の版に戻らないようにするため。
+func respawnBin(e state.Entry) binSpec {
+	cfg, err := bridgecfg.Load(e.Handle)
+	if err != nil {
+		cfg = nil
+	}
+	return pinFromConfigOrState(&e, cfg)
 }
