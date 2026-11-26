@@ -92,7 +92,7 @@ commit / build date は go の VCS stamping（`debug.ReadBuildInfo`）から取�
 | `bridge restart <handle> \| --all [--stop-timeout …]` | 再起動（display_name / model / bin は bridge config を再読、無ければ前回値。bin は config で付けた固定なら `config set --bin ""` で外れる）。stop 側は `bridge stop` と同じく graceful drain が終わるまで待ってから再 spawn する。既定の待ち時間は bridge の drain 上限 + 1m（`--stop-timeout` で変更、超えたら SIGKILL して再 spawn。SIGKILL 後 5 秒たってもプロセスが残っている場合は再 spawn せずエラーで終了する）。drain を待っている間も state のエントリは残すので、待機中に Ctrl-C・SSH 切断・SIGKILL などで restart が終わっても bridge は state から消えない。旧プロセスが終わった後、config のある bridge は fleet の `bridge start --all` が再 spawn し、config の無い bridge は `bridge restart <handle>` をもう一度実行すれば再 spawn できる。旧プロセスが終わってから restart が再 spawn に移るまでの間に fleet などが先に再 spawn した場合、restart は二重に起動せずエラーで終了する（bridge はそちらが起動したもので動いている。`bridge list` で確認）（issue #97）。単位に注意: `--stop-timeout` は duration（例 `5m`）、`--timeout` は再 spawn 後の ready 待ちで秒（例 `40`）。`--all` は 1 体ずつ順に回す（issue #92） |
 | `bridge start <handle> \| --all` | 起動（config から）。`start <handle>` / `spawn` は config の `stopped_at` を消す（明示的に起こした = 動かす）。「already running」で弾かれた場合は消さない。`--all` は `stopped_at` のある bridge を `skipping @x (stopped since …)` で飛ばす（issue #98） |
 | `bridge list` | 一覧（untracked 併記、MODEL 列 = agenthubctl が渡した model。未指定は `(not passed)`） |
-| `bridge status [handle]` | 状態表示（`status <handle>` は `model: <id> (source: flag\|config\|state\|cmdline)`、`bin: <name> (source: flag\|config\|state)`、固定なしなら出所 env / default を表示（issue #88）） |
+| `bridge status [handle]` | 状態表示（`status <handle>` は `model: <id> (source: flag\|config\|state\|cmdline)`）。LIVE の bridge は `/proc/<pid>/exe` から実際に動いている binary を出す: 一覧は `EXE`（実体のファイル名）と `SHA`（sha256 先頭 12 桁）、`status <handle>` は `bin:`（spawn 時の指定と出所）・`exe:`（実体のフルパス）・`sha256:`（全桁）。差し替え・削除された binary で動いている場合は exe に kernel の ` (deleted)` が付き、sha は動いている中身のもの。読めない場合は `-`（issue #88） |
 | `bridge sync [--dry-run]` | state と実プロセスを整合 |
 | `bridge prune [--dry-run]` | dead エントリ削除 |
 | `bridge logs [-f] <handle>` | ログ表示（agenthubctl が接続した stdout/stderr。既定 `$AGENT_HUB_HOME/logs/bridge-<handle>.out.log`、`AGENT_HUB_BRIDGE_LOG_DIR` で上書き可。旧 `/tmp/bridge-<handle>.log` は spawn / restart 時に新パスへの symlink に置き換わり移行期間中は参照可（旧バイナリが残した自己所有ログは `.pre-migration` に退避）、将来の minor で削除） |
@@ -127,7 +127,7 @@ bridge の binary は `$BIN`（`$AGENT_HUB_HOME/bin`、未設定なら `~/.agent
 # 1 体だけ別 build で動かす（watchdog が起こし直しても同じ build のまま）
 agenthubctl bridge config set chaos-research --bin bridge-claude2@6019e3d80be5
 agenthubctl bridge restart chaos-research
-agenthubctl bridge status chaos-research    # bin: で確認
+agenthubctl bridge status chaos-research    # bin: / exe: / sha256: で確認
 # 戻す
 agenthubctl bridge config set chaos-research --bin ""
 agenthubctl bridge restart chaos-research
