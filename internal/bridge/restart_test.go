@@ -16,7 +16,7 @@ func stubRestartSpawn(t *testing.T, pid int) <-chan bool {
 	t.Helper()
 	called := make(chan bool, 1)
 	orig := restartSpawn
-	restartSpawn = func(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, timeoutS int) error {
+	restartSpawn = func(participant, bridgeType, workdir, tenantFlag, displayName string, model modelSpec, bin binSpec, timeoutS int) error {
 		called <- syscall.Kill(pid, 0) == nil
 		return nil
 	}

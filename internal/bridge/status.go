@@ -69,6 +69,7 @@ func runStatus(user string) error {
 	fmt.Printf("type:     %s\n", bridgeTypeOrDefault(entry.BridgeType))
 	fmt.Printf("tenant:   %s\n", tenantOrDefault(entry.Tenant))
 	fmt.Printf("model:    %s\n", modelDetail(entry.Model, entry.ModelSource))
+	fmt.Printf("bin:      %s\n", binDetail(entry))
 	fmt.Printf("workdir:  %s\n", entry.Workdir)
 	fmt.Printf("log:      %s\n", entry.LogPath)
 	fmt.Printf("started:  %s\n", entry.StartedAt)
@@ -86,6 +87,20 @@ func runStatus(user string) error {
 	}
 
 	return nil
+}
+
+// binDetail は status <handle> 用: spawn 時に binary をどう決めたか (issue #88)。
+func binDetail(e *state.Entry) string {
+	switch {
+	case e.Bin != "":
+		return fmt.Sprintf("%s (source: %s)", e.Bin, e.BinSource)
+	case e.BinSource == binSourceEnv:
+		return "(not pinned; source: env " + binEnvVar(bridgeTypeOrDefault(e.BridgeType)) + ", deprecated)"
+	case e.BinSource == binSourceDefault:
+		return "(not pinned; source: default $AGENT_HUB_HOME/bin/" + bridgeTypeOrDefault(e.BridgeType) + ")"
+	default:
+		return "(not recorded; spawned before issue #88)"
+	}
 }
 
 // tailLog はファイルの末尾 n 行を返す。

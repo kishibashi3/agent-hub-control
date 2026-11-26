@@ -4,9 +4,11 @@ package bridge
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"text/tabwriter"
 
 	"github.com/kishibashi3/agent-hub-control/internal/bridgecfg"
+	"github.com/kishibashi3/agent-hub-control/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -31,6 +33,7 @@ func newConfigSetCmd() *cobra.Command {
 		bridgeType  string
 		displayName string
 		model       string
+		bin         string
 	)
 
 	cmd := &cobra.Command{
@@ -69,6 +72,16 @@ func newConfigSetCmd() *cobra.Command {
 			if cmd.Flags().Changed("model") {
 				existing.Model = model
 			}
+			// bin も Changed で判定する: `--bin ""` で固定を外して既定の $BIN/<type> に戻す (issue #88)。
+			if cmd.Flags().Changed("bin") {
+				if bin != "" {
+					if err := validateBinName(bin); err != nil {
+						return err
+					}
+					warnBinMissing(bin)
+				}
+				existing.Bin = bin
+			}
 
 			if err := bridgecfg.Save(existing); err != nil {
 				return fmt.Errorf("save config: %w", err)
@@ -83,6 +96,7 @@ func newConfigSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&bridgeType, "type", "", "bridge type (default: bridge-claude2)")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name passed on spawn")
 	cmd.Flags().StringVar(&model, "model", "", "LLM model id passed on spawn (bridge-claude2 only; pass \"\" to clear)")
+	cmd.Flags().StringVar(&bin, "bin", "", "bridge binary file name in $AGENT_HUB_HOME/bin used by spawn / start / restart / watchdog (e.g. bridge-claude2@6019e3d80be5; no '/'; pass \"\" to clear and use the default $AGENT_HUB_HOME/bin/<type>)")
 	return cmd
 }
 
@@ -110,6 +124,7 @@ func newConfigGetCmd() *cobra.Command {
 			fmt.Fprintf(w, "type\t%s\n", bridgeType)
 			fmt.Fprintf(w, "display_name\t%s\n", cfg.DisplayName)
 			fmt.Fprintf(w, "model\t%s\n", configModelDisplay(cfg.Model))
+			fmt.Fprintf(w, "bin\t%s\n", configBinDisplay(cfg.Bin))
 			fmt.Fprintf(w, "state\t%s\n", configStateDisplay(cfg))
 			return w.Flush()
 		},
@@ -131,14 +146,14 @@ func newConfigListCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "HANDLE\tSTATE\tTYPE\tTENANT\tMODEL\tWORKDIR\tDISPLAY_NAME")
+			fmt.Fprintln(w, "HANDLE\tSTATE\tTYPE\tTENANT\tMODEL\tBIN\tWORKDIR\tDISPLAY_NAME")
 			for _, cfg := range cfgs {
 				bridgeType := cfg.BridgeType
 				if bridgeType == "" {
 					bridgeType = defaultBridgeType
 				}
-				fmt.Fprintf(w, "@%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					cfg.Handle, configStateDisplay(cfg), bridgeType, cfg.Tenant, configModelDisplay(cfg.Model), cfg.Workdir, cfg.DisplayName)
+				fmt.Fprintf(w, "@%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					cfg.Handle, configStateDisplay(cfg), bridgeType, cfg.Tenant, configModelDisplay(cfg.Model), configBinDisplay(cfg.Bin), cfg.Workdir, cfg.DisplayName)
 			}
 			return w.Flush()
 		},
@@ -160,6 +175,27 @@ func configModelDisplay(model string) string {
 		return "(unset)"
 	}
 	return model
+}
+
+// configBinDisplay は config 表示用: 未設定は "(default)" (= $BIN/<type>、移行期間は env が優先)。
+func configBinDisplay(bin string) string {
+	if bin == "" {
+		return "(default)"
+	}
+	return bin
+}
+
+// warnBinMissing は config set --bin の値が今の $BIN に無いときに warning を出す。deploy 前に config を
+// 書く順序もありうるのでエラーにはしない (起動時の resolveBinary が検査する)。
+func warnBinMissing(bin string) {
+	dir, err := state.BinDir()
+	if err != nil {
+		return
+	}
+	p := filepath.Join(dir, bin)
+	if _, err := checkBridgeBinary(p); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s: %v (saved anyway; spawn will fail until it is fixed)\n", p, err)
+	}
 }
 
 // modelDisplay は state 表示用 (list / status 全件表)。空は「agenthubctl が -model を渡していない」
