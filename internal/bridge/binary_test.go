@@ -1,10 +1,7 @@
 package bridge
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -324,57 +321,5 @@ func TestRunSpawnRecordsPinnedBin(t *testing.T) {
 	}
 	if e := st.Get(handle); e == nil || e.Bin != "bridge-claude2@pinned" || e.BinSource != binSourceFlag {
 		t.Errorf("state entry = %+v, want Bin=bridge-claude2@pinned BinSource=flag", e)
-	}
-}
-
-// TestExeSHACache: status の EXE / SHA は /proc/<pid>/exe から読み、ファイルが消された後も実際に動いている
-// 中身の sha を返す (issue #88)。
-func TestExeSHACache(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("relies on /proc/<pid>/exe")
-	}
-	bin := copyShAs(t, "bridge-fake")
-	data, err := os.ReadFile(bin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(data)
-	wantSHA := hex.EncodeToString(sum[:])
-
-	cmd := exec.Command(bin, "-c", "sleep 30; :")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	pid := cmd.Process.Pid
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if exe, _ := state.ReadExe(pid); exe == bin {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	c := exeSHACache{}
-	exe, sha := c.info(pid)
-	if exe != bin || sha != wantSHA {
-		t.Errorf("info = (%q, %q), want (%q, %q)", exe, sha, bin, wantSHA)
-	}
-	if len(c) != 1 {
-		t.Errorf("cache size = %d, want 1", len(c))
-	}
-
-	// 差し替え (削除) 後も、動いている中身の sha を出し、exe には kernel の " (deleted)" を残す。
-	if err := os.Remove(bin); err != nil {
-		t.Fatal(err)
-	}
-	exe, sha = exeSHACache{}.info(pid)
-	if exe != bin+" (deleted)" || sha != wantSHA {
-		t.Errorf("after delete: info = (%q, %q), want (%q, %q)", exe, sha, bin+" (deleted)", wantSHA)
-	}
-
-	// 読めない PID は "-"。
-	if exe, sha := (exeSHACache{}).info(deadPID(t)); exe != "-" || sha != "-" {
-		t.Errorf("dead pid: info = (%q, %q), want (-, -)", exe, sha)
 	}
 }

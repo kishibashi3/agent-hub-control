@@ -4,7 +4,6 @@ package bridge
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"text/tabwriter"
 
 	"github.com/kishibashi3/agent-hub-control/internal/state"
@@ -36,50 +35,16 @@ func runStatusAll() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTYPE\tTENANT\tMODEL\tEXE\tSHA\tSTARTED")
-	shas := exeSHACache{}
+	fmt.Fprintln(w, "HANDLE\tSTATUS\tPID\tTYPE\tTENANT\tMODEL\tSTARTED")
 	for _, e := range st.Bridges {
 		label := "DEAD"
-		exe, sha := "-", "-"
 		if e.IsRunning() {
 			label = "LIVE"
-			exe, sha = shas.info(e.PID)
-			if exe != "-" {
-				exe = filepath.Base(exe)
-			}
-			if len(sha) > 12 {
-				sha = sha[:12]
-			}
 		}
-		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			e.Handle, label, e.PID, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), modelDisplay(e.Model), exe, sha, e.StartedAt)
+		fmt.Fprintf(w, "@%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+			e.Handle, label, e.PID, bridgeTypeOrDefault(e.BridgeType), tenantOrDefault(e.Tenant), modelDisplay(e.Model), e.StartedAt)
 	}
 	return w.Flush()
-}
-
-// exeSHACache は /proc/<pid>/exe の実体 (readlink) と中身の sha256 を返す (issue #88)。同じ binary
-// ((dev, inode) が同じ) で動いている bridge の sha は 1 回だけ計算する (数十体が数種類の build を共有する)。
-// 読めない場合 (権限 / 消滅 / procfs 非対応) は "-" を返し、エラーにはしない。
-type exeSHACache map[[2]uint64]string
-
-func (c exeSHACache) info(pid int) (exe, sha string) {
-	exe, sha = "-", "-"
-	if p, err := state.ReadExeRaw(pid); err == nil {
-		exe = p
-	}
-	dev, ino, err := state.ExeFileID(pid)
-	if err != nil {
-		return exe, sha
-	}
-	key := [2]uint64{dev, ino}
-	if v, ok := c[key]; ok {
-		return exe, v
-	}
-	if v, err := state.ExeSHA256(pid); err == nil {
-		sha = v
-		c[key] = v
-	}
-	return exe, sha
 }
 
 func runStatus(user string) error {
@@ -94,10 +59,8 @@ func runStatus(user string) error {
 	}
 
 	status := "stopped"
-	exe, sha := "-", "-"
 	if entry.IsRunning() {
 		status = "running"
-		exe, sha = exeSHACache{}.info(entry.PID)
 	}
 
 	fmt.Printf("handle:   @%s\n", entry.Handle)
@@ -107,8 +70,6 @@ func runStatus(user string) error {
 	fmt.Printf("tenant:   %s\n", tenantOrDefault(entry.Tenant))
 	fmt.Printf("model:    %s\n", modelDetail(entry.Model, entry.ModelSource))
 	fmt.Printf("bin:      %s\n", binDetail(entry))
-	fmt.Printf("exe:      %s\n", exe)
-	fmt.Printf("sha256:   %s\n", sha)
 	fmt.Printf("workdir:  %s\n", entry.Workdir)
 	fmt.Printf("log:      %s\n", entry.LogPath)
 	fmt.Printf("started:  %s\n", entry.StartedAt)
@@ -128,8 +89,7 @@ func runStatus(user string) error {
 	return nil
 }
 
-// binDetail は status <handle> 用: spawn 時に binary をどう決めたか (issue #88)。exe / sha256 は今動いている
-// 実体で、こちらは spawn 時の指定。
+// binDetail は status <handle> 用: spawn 時に binary をどう決めたか (issue #88)。
 func binDetail(e *state.Entry) string {
 	switch {
 	case e.Bin != "":
